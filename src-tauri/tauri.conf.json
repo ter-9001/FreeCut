@@ -12,9 +12,10 @@
   "app": {
     "windows": [
       {
-        "title": "freecut",
+        "title": "FreeCut",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "dragDropEnabled": true
       }
     ],
     "security": {
