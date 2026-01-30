@@ -1,14 +1,15 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Scissors, Plus, Play, SkipBack, Youtube, 
+import {
+  Scissors, Plus, Play, SkipBack, Youtube,
   Settings, Share2, FolderOpen, Save, X,
-  LayoutGrid, List, Clock, 
+  LayoutGrid, List, Clock,
   Import
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { track } from 'framer-motion/client';
 
 // --- INTERFACES ---
 
@@ -23,6 +24,7 @@ interface Clip {
   start: number;
   duration: number;
   color: string;
+  trackId: number;
 }
 
 const PIXELS_PER_SECOND = 5;
@@ -42,66 +44,92 @@ export default function App() {
   const [assets, setAssets] = useState<string[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
   const [clips, setClips] = useState<Clip[]>([]);
-  
-  
+  const [tracks, setTracks] = useState<number[]>([0]);
+  const [deleteClipId, setDeleteClipId] = useState<number | null>(null);
+
   const currentProjectPath = localStorage.getItem("current_project_path");
   const timelineRef = useRef<HTMLDivElement>(null);
+  const timelineContainerRef = useRef<HTMLDivElement>(null);
+
 
   // --- TAURI V2 NATIVE DRAG & DROP LISTENER ---
-// 1. Add this ref to your Timeline container div in the JSX later
-const timelineContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
 
-// 2. Updated Native Listener
-useEffect(() => {
-  let unlisten: any;
+    const setupDropListener = async () => {
+      // Armazena a função de desinscrição retornada pela Promise
+      const unsubscribe = await getCurrentWindow().onDragDropEvent((event) => {
+        if (event.payload.type === 'drop') {
+          const { paths, position } = event.payload;
+          const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
+          const isTimelineZone = timelineBounds &&
+            position.y >= timelineBounds.top &&
+            position.y <= timelineBounds.bottom;
 
-  const setupDropListener = async () => {
-    unlisten = await getCurrentWindow().onDragDropEvent((event) => {
-      if (event.payload.type === 'drop') {
-        const { paths, position } = event.payload;
-        
-        // Buscamos onde a timeline está na tela no momento do drop
-        const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
-        
-        // Se a posição Y do mouse estiver dentro da área da timeline
-        const isTimelineZone = timelineBounds && 
-                               position.y >= timelineBounds.top && 
-                               position.y <= timelineBounds.bottom;
+          handleNativeDrop(paths, position.x, position.y);
+        }
+      });
+      unlisten = unsubscribe;
+    };
 
-        console.log("Native Drop - Zone:", isTimelineZone ? "Timeline" : "Assets");
-        
-        handleNativeDrop(paths, position.x, isTimelineZone, timelineBounds);
+    if (!isSetupOpen) {
+      setupDropListener();
+    }
+
+    return () => {
+      if (unlisten) {
+        unlisten();
       }
-    });
-  };
+    };
+  }, [isSetupOpen, currentProjectPath]);
+    const handleDragOver = (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "copy";
+    };
 
-  if (!isSetupOpen) setupDropListener();
-  
-  return () => { if (unlisten) unlisten().then((f: any) => f); };
-}, [isSetupOpen, currentProjectPath]);
-
-// Função centralizada para lidar com arquivos do SO
-const handleNativeDrop = async (paths: string[], mouseX: number, isTimeline: boolean, bounds?: DOMRect) => {
+  // Function to lead with Drag direct from OS
+ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number) => {
   if (!currentProjectPath) return;
+
+  const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
+  if (!timelineBounds) return;
+
+  const margin = 120;
+  const isInsideTimeline = 
+    mouseY >= (timelineBounds.top - margin) &&
+    mouseY <= (timelineBounds.bottom + margin) &&
+    mouseX >= (timelineBounds.left - margin) &&
+    mouseX <= (timelineBounds.right + margin);
+
+  ///console.log("Is Inside Timeline?", isInsideTimeline);
 
   for (const path of paths) {
     try {
-      // 1. Rust importa o arquivo para a pasta do projeto
+      // 1. Importação obrigatória para o backend (Assets)
       await invoke('import_asset', { projectPath: currentProjectPath, filePath: path });
       const fileName = path.split(/[\\/]/).pop() || "Asset";
 
-      // 2. Se caiu na timeline, adicionamos o clip
-      if (isTimeline && bounds) {
+      // 2. Se estiver na zona da timeline, injetamos direto no estado de clips
+      if (isInsideTimeline) {
         const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-        const relativeX = mouseX - bounds.left + scrollLeft;
-        const dropTime = relativeX / PIXELS_PER_SECOND;
+        const relativeX = mouseX - timelineBounds.left + scrollLeft;
+        const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND);
 
+        const TRACK_HEIGHT = 80;
+        const relativeY = mouseY - timelineBounds.top;
+        const targetTrack = Math.floor(relativeY / TRACK_HEIGHT);
+        const finalTrackId = Math.max(0, targetTrack);
+
+
+        // --- ADD CLIP ---
         setClips(prev => [...prev, {
           id: Date.now() + Math.random(),
           name: fileName,
           start: dropTime,
           duration: 10,
-          color: 'bg-blue-600' // Clips externos azuis
+          color: 'bg-blue-600',
+          trackId: finalTrackId
         }]);
       }
     } catch (err) {
@@ -109,25 +137,55 @@ const handleNativeDrop = async (paths: string[], mouseX: number, isTimeline: boo
     }
   }
   loadAssets(); // Atualiza a lista lateral
-  showNotify("Media Processed", "success");
 };
+
+
+const handleEnd = async (mouseX: number, mouseY: number) =>
+{
+
+
+  const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
+  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+
+  const relativeX = mouseX - timelineBounds.left + scrollLeft;
+  const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND);
   
-  // Process to prevent WebView from opening the file as a URL
+
+
+
+        const TRACK_HEIGHT = 80;
+        const relativeY = mouseY - timelineBounds.top;
+        const targetTrack = Math.floor(relativeY / TRACK_HEIGHT);
+        const finalTrackId = Math.max(0, targetTrack);
+
+
+        // --- ADD CLIP ---
+        setClips(prev => [...prev, {
+          id: Date.now() + Math.random(),
+          name: fileName,
+          start: dropTime,
+          duration: 10,
+          color: 'bg-blue-600',
+          trackId: finalTrackId
+        }]);
+
+
+}
+
   useEffect(() => {
-  const preventDefault = (e: DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
+    const preventDefault = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
 
-  // This prevents the browser from opening the file as a URL
-  window.addEventListener("dragover", preventDefault, false);
-  window.addEventListener("drop", preventDefault, false);
+    window.addEventListener("dragover", preventDefault, false);
+    window.addEventListener("drop", preventDefault, false);
 
-  return () => {
-    window.removeEventListener("dragover", preventDefault, false);
-    window.removeEventListener("drop", preventDefault, false);
-  };
-}, []);
+    return () => {
+      window.removeEventListener("dragover", preventDefault, false);
+      window.removeEventListener("drop", preventDefault, false);
+    };
+  }, []);
 
 
   // --- PROJECT METHODS ---
@@ -152,6 +210,8 @@ const handleNativeDrop = async (paths: string[], mouseX: number, isTimeline: boo
     const selected = await open({ directory: true, multiple: false, title: "Select Workspace" });
     if (selected) setRootPath(selected as string);
   };
+
+
 
   const handleFinishSetup = async () => {
     if (rootPath && projectName) {
@@ -202,35 +262,77 @@ const handleNativeDrop = async (paths: string[], mouseX: number, isTimeline: boo
     }
   };
 
-  const handleDragStart = (e: React.DragEvent, assetName: string) => {
+  const handleDragStart = (e: React.DragEvent, assetName: string, deletePrevious: boolean = false, idToDelete: number = 0 ) => {
+    
+    
+    
     e.dataTransfer.setData("assetName", assetName);
     e.dataTransfer.effectAllowed = "copy";
+
+    if(deletePrevious)
+      setDeleteClipId(idToDelete)
+
   };
 
- 
-  const handleDropOnTimeline = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
 
-    console.log('oi')
-    console.log(e.dataTransfer)
+const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const assetName = e.dataTransfer.getData("assetName");
+  
+  if (assetName) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+    const x = e.clientX - rect.left + scrollLeft;
     
-    const assetName = e.dataTransfer.getData("assetName");
-    if (assetName) {
-      const rect = e.currentTarget.getBoundingClientRect();
-      const scrollLeft = e.currentTarget.closest('.overflow-x-auto')?.scrollLeft || 0;
-      const x = e.clientX - rect.left + scrollLeft;
+    // Convert drop X position to timeline seconds
+    const dropTime = x / PIXELS_PER_SECOND;
+    const MAX_DEFAULT_DURATION = 40; //  default duration set to 40s
 
-      setClips(prev => [...prev, {
-        id: Date.now(),
-        name: assetName,
-        start: x / PIXELS_PER_SECOND,
-        duration: 10,
-        color: 'bg-red-600'
-      }]);
+    // 1. Find the nearest clip on the SAME track that starts AFTER our drop point
+    const nextClip = clips
+      .filter(c => c.trackId === trackId && c.start > dropTime)
+      .reduce((prev, curr) => (prev === null || curr.start < prev.start ? curr : prev), null as Clip | null);
+
+    // 2. Calculate dynamic duration
+    // If there is a clip ahead, duration is the gap between drop and next clip (clamped at 40s)
+    // If no clip ahead, default to 40s
+    let finalDuration = MAX_DEFAULT_DURATION;
+    if (nextClip) {
+      const timeUntilNextClip = nextClip.start - dropTime;
+      finalDuration = Math.min(MAX_DEFAULT_DURATION, timeUntilNextClip);
     }
-  };
 
+    // 3. Prevent overlap if dropping exactly on top of an existing clip's start
+    if (finalDuration <= 0) {
+      showNotify("No space available here", "error");
+      return;
+    }
+
+    // 4. Create the new clip with the calculated duration
+    const newClip: Clip = {
+      id: Date.now() + Math.random(),
+      name: assetName,
+      start: dropTime,
+      duration: finalDuration,
+      color: 'bg-red-600',
+      trackId: trackId
+    };
+
+    // 5. Update state: Add new clip and remove the old one if it was a move operation
+    setClips(prevClips => {
+      let filtered = prevClips;
+      if (deleteClipId !== null) {
+        filtered = prevClips.filter(clip => clip.id !== deleteClipId);
+      }
+      return [...filtered, newClip];
+    });
+
+    // Reset move state
+    setDeleteClipId(null);
+  }
+};
   const handleImportFile = async () => {
     const selected = await open({
       multiple: true,
@@ -264,14 +366,18 @@ const handleNativeDrop = async (paths: string[], mouseX: number, isTimeline: boo
 
   return (
     <div className="flex flex-col h-screen w-screen bg-black text-zinc-300 font-sans overflow-hidden">
-      
+
       {/* Notifications */}
       <AnimatePresence>
         {notification && (
-          <motion.div initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 20, opacity: 0 }}
+          <motion.div 
+            initial={{ y: 50, opacity: 0 }} 
+            animate={{ y: 0, opacity: 1 }} 
+            exit={{ y: 20, opacity: 0 }}
             className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-[500] px-6 py-3 rounded-full font-bold text-xs shadow-2xl flex items-center gap-3 border ${
               notification.type === 'success' ? 'bg-zinc-900 border-green-500/50 text-green-400' : 'bg-zinc-900 border-red-500/50 text-red-400'
-            }`}>
+            }`}
+          >
             <div className={`w-2 h-2 rounded-full ${notification.type === 'success' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
             {notification.message.toUpperCase()}
           </motion.div>
@@ -308,11 +414,17 @@ const handleNativeDrop = async (paths: string[], mouseX: number, isTimeline: boo
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                 {projects.map((proj) => (
-                  <motion.div key={proj.path} whileHover={{ scale: 1.02 }} onClick={() => openProject(proj.path)}
-                    className="group bg-[#121212] border border-zinc-800/50 rounded-2xl overflow-hidden cursor-pointer hover:border-red-600 transition-all relative">
-                    <button onClick={(e) => { e.stopPropagation(); setProjectToDelete(proj); }}
-                      className="absolute top-2 right-2 z-50 p-2 bg-black/50 hover:bg-red-600 text-zinc-400 rounded-lg opacity-0 group-hover:opacity-100 transition-all">
-                      <X size={14} />
+                  <motion.div 
+                    key={proj.path} 
+                    whileHover={{ scale: 1.02 }} 
+                    onClick={() => openProject(proj.path)}
+                    className="group bg-[#121212] border border-zinc-800/50 rounded-2xl overflow-hidden cursor-pointer hover:border-red-600 transition-all relative"
+                  >
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); setProjectToDelete(proj); }}
+                      className="absolute top-2 right-2 z-50 p-2 bg-black/50 hover:bg-red-600 text-zinc-400 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
+                    >
+                      <X size={14} /> 
                     </button>
                     <div className="aspect-video bg-[#1a1a1a] flex items-center justify-center border-b border-zinc-800">
                       <LayoutGrid size={40} className="text-zinc-800 group-hover:text-red-600/20" />
@@ -331,21 +443,20 @@ const handleNativeDrop = async (paths: string[], mouseX: number, isTimeline: boo
         <div className="flex flex-col h-full">
           <header className="h-12 border-b border-zinc-800 flex items-center justify-between px-4 bg-[#111] z-10 shadow-md">
             <div className="flex items-center gap-4">
-              <button onClick={() => setIsSetupOpen(true)} className="text-zinc-500 hover:text-white text-[10px] font-bold">BACK</button>
+              <button  onClick={() => setIsSetupOpen(true)}  className="text-zinc-500 hover:text-white text-[10px] font-bold">BACK</button>
               <h1 className="text-[11px] font-black uppercase text-white">{projectName}</h1>
             </div>
-           <div className="flex items-center gap-3">
-            <button 
-              onClick={() => setIsImportModalOpen(true)}
-              className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white text-[10px] font-black px-6 py-2 rounded-full transition-all active:scale-95 shadow-lg shadow-red-900/20"
-            >
-              <Youtube size={14} /> Download
-            </button>
-            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Share2 size={16}/></button>
-            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Settings size={16}/></button>
-            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Import size={16}/></button>
-
-          </div>
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => setIsImportModalOpen(true)}
+                className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white text-[10px] font-black px-6 py-2 rounded-full transition-all active:scale-95 shadow-lg shadow-red-900/20"
+              >
+                <Youtube size={14} /> Download
+              </button>
+              <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Share2 size={16}/></button>
+              <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Settings size={16}/></button>
+              <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Import size={16}/></button>
+            </div>
           </header>
 
           <main className="flex-1 flex overflow-hidden">
@@ -354,11 +465,11 @@ const handleNativeDrop = async (paths: string[], mouseX: number, isTimeline: boo
                 <h2 className="text-[10px] font-black text-zinc-500 uppercase">Assets</h2>
               </div>
               <div className="flex-1 overflow-y-auto p-4">
-                <div onClick={handleImportFile}  className="aspect-video border border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center group cursor-pointer hover:bg-zinc-900/50">
+                <div onClick={handleImportFile} className="aspect-video border border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center group cursor-pointer hover:bg-zinc-900/50">
                   <Plus size={20} className="text-zinc-700 group-hover:text-red-500" />
                   <h2 className="text-[10px] font-black text-zinc-500 uppercase"> Import Media </h2>
                 </div>
-                 {assets.map((asset, index) => (
+                {assets.map((asset, index) => (
                   <motion.div 
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: 1, x: 0 }}
@@ -381,12 +492,10 @@ const handleNativeDrop = async (paths: string[], mouseX: number, isTimeline: boo
 
             <section className="flex-1 bg-black flex flex-col items-center justify-center p-8">
               <div className="w-full max-w-4xl aspect-video bg-[#050505] rounded-xl border border-zinc-800 flex items-center justify-center relative">
-                 <Play size={56} className="text-white/10" />
+                <Play size={56} className="text-white/10" />
               </div>
             </section>
           </main>
-
-          {/* Timeline Footer */}
           <footer className="h-80 bg-[#0c0c0c] border-t border-zinc-800 flex flex-col z-20">
             <div className="h-10 border-b border-zinc-900 flex items-center px-4 justify-between bg-[#0e0e0e]">
               <div className="flex items-center gap-6">
@@ -395,26 +504,55 @@ const handleNativeDrop = async (paths: string[], mouseX: number, isTimeline: boo
               </div>
             </div>
 
-            <div className="flex-1 overflow-x-auto relative bg-[#080808]" ref={timelineContainerRef}>
-              <div className="h-7 border-b border-zinc-900 sticky top-0 bg-[#080808]/80 backdrop-blur-md z-30" onClick={handleRulerClick}>
+            <div 
+              ref={timelineContainerRef}
+              className="flex-1 overflow-x-auto relative bg-[#080808] scrollbar-thin scrollbar-thumb-zinc-800"
+            >
+              <div className="h-7 border-b border-zinc-900 sticky top-0 bg-[#080808]/80 backdrop-blur-md z-30 cursor-crosshair" onClick={handleRulerClick}>
                 {[...Array(60)].map((_, i) => (
                   <div key={i} className="absolute border-l border-zinc-800 h-full text-[8px] pl-2 pt-1.5 text-zinc-700 font-mono" style={{left: i * 20 * PIXELS_PER_SECOND}}>{i * 20}s</div>
                 ))}
               </div>
 
-              <div className="p-4 min-w-[6000px] relative h-full">
-                 <div className="absolute top-0 bottom-0 w-[1px] bg-red-600 z-40" style={{left: playheadPos + 16}} />
-                 <div className="h-16 bg-zinc-900/10 border border-zinc-800/50 rounded-xl mb-3 relative overflow-hidden" 
-                   onDrop={handleDropOnTimeline} // This handles SIDEBAR assets
-                   >
-                    {clips.map((clip) => (
-                      <motion.div key={clip.id} drag="x" dragMomentum={false}
-                        className={`absolute inset-y-2 ${clip.color} border-x border-white/20 rounded-lg flex items-center px-4 cursor-grab shadow-2xl`}
-                        style={{ width: clip.duration * PIXELS_PER_SECOND, left: clip.start * PIXELS_PER_SECOND }}>
-                        <span className="text-[10px] font-black text-white truncate uppercase">{clip.name}</span>
+              <div className="p-4 min-w-[6000px] relative h-full flex flex-col gap-1">
+                <div className="absolute top-0 bottom-0 w-[1px] bg-red-600 z-40 pointer-events-none" style={{left: playheadPos + 16}}>
+                  <div className="w-2.5 h-2.5 bg-red-600 rounded-full -ml-[4.5px] -mt-0.5 shadow-lg" />
+                </div>
+
+                {tracks.map((trackId) => (
+                  <div 
+                    key={trackId}
+                    onDragOver={handleDragOver}
+                    onDrop={(e) => handleDropOnTimeline(e, trackId)}
+                    
+
+                    className="h-20 bg-zinc-900/20 border border-zinc-800/50 rounded-lg relative overflow-hidden group hover:border-zinc-700 transition-colors"
+                  >
+                    <div className="absolute left-2 top-1 text-[8px] font-black text-zinc-700 uppercase tracking-widest pointer-events-none">
+                      Track {trackId + 1}
+                    </div>
+
+                    {clips.filter(c => c.trackId === trackId).map((clip) => (
+                      <motion.div 
+                        key={clip.id}
+                        draggable = "true"
+                        onDragStart={(e) => handleDragStart(e, clip.name, true , clip.id)}
+                        
+                        className={`absolute inset-y-2 ${clip.color} border-x border-white/20 rounded-lg flex items-center px-4 cursor-grab active:cursor-grabbing shadow-xl z-10`}
+                        style={{ width: clip.duration * PIXELS_PER_SECOND, left: clip.start * PIXELS_PER_SECOND }}
+                      >
+                        <span className="text-[10px] font-black text-white truncate uppercase italic">{clip.name}</span>
                       </motion.div>
                     ))}
-                 </div>
+                  </div>
+                ))}
+
+                <button 
+                  onClick={() => setTracks(prev => [...prev, prev.length])}
+                  className="mt-2 flex items-center gap-2 text-[9px] font-black text-zinc-700 hover:text-zinc-500 uppercase tracking-widest transition-colors"
+                >
+                  <Plus size={12} /> Add Track
+                </button>
               </div>
             </div>
           </footer>
@@ -455,8 +593,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, isTimeline: boo
         )}
       </AnimatePresence>
 
-
-      {/* --- DELETE CONFIRMATION MODAL --- */}
+      {/* DELETE CONFIRMATION MODAL */}
       <AnimatePresence>
         {projectToDelete && (
           <div className="fixed inset-0 bg-black/90 z-[400] flex items-center justify-center p-4 backdrop-blur-md">
