@@ -27,6 +27,14 @@ interface Clip {
   trackId: number;
 }
 
+interface ProjectFileData {
+  projectName: string;
+  assets: string[];
+  clips: Clip[];
+  lastModified: number;
+  copyOf?: string; // Pointer to another main{timestamp}.project file
+}
+
 const PIXELS_PER_SECOND = 5;
 
 export default function App() {
@@ -63,6 +71,9 @@ export default function App() {
   const isInitialMount = useRef(true);
   const [isProjectLoaded, setIsProjectLoaded] = useState(false);
 
+  //first 
+  
+
   //color for clips
   const CLIP_COLORS = [
     'bg-blue-600',   // Ocean
@@ -78,6 +89,15 @@ export default function App() {
   const getRandomColor = () => CLIP_COLORS[Math.floor(Math.random() * CLIP_COLORS.length)];
 
   const [selectedClipId, setSelectedClipId] = useState<number | null>(null);
+  const [selectedAsset, setSelectedAsset] = useState<string | null>(null);
+
+
+  //Code to navagate between main.project versions
+  const [projectCopyName, setProjectCopyName] = useState<string|null>(null);
+  const [projectsMains, setProjectsMains] = useState<string[]>([]);
+
+  //variavle to help detected any file add by function saveProject
+  const [changed, setChanged] = useState<boolean>(false)
 
   // Code to make the clip resizable 
   const handleResize = (id: number, deltaX: number, side: 'left' | 'right') => {
@@ -127,23 +147,49 @@ export default function App() {
     document.addEventListener('mouseup', onMouseUp);
   };
 
-
+  //all time copyname change will be reloadproject
+  useEffect(() => { 
+    
+    if (currentProjectPath && isSetupOpen)
+      openProject(currentProjectPath.toString())  
+    
+  }, [projectCopyName])
 
 
 
 
   // Effect to handle automatic saving whenever project data changes
   useEffect(() => {
+
+    
+
+
+
     const saveProject = async () => {
       // DO NOT save if the project hasn't finished loading yet
       if (!isProjectLoaded || !currentProjectPath) return;
 
-      const projectData = {
+      
+
+      console.log("saveproject copyname", projectCopyName)
+     
+
+     const projectData: ProjectFileData = {
         projectName,
         assets,
         clips,
         lastModified: Date.now()
       };
+
+      if (projectCopyName) {
+        projectData.copyOf = projectCopyName;
+      }
+
+      
+
+
+      
+
 
       try {
         await invoke('save_project_data', {
@@ -152,29 +198,151 @@ export default function App() {
           timestamp: Date.now()
         });
         console.log("Project saved successfully.");
+        
       } catch (err) {
         console.error("Auto-save failed:", err);
       }
+
+        setChanged(true)
+
+
     };
 
-    const timeoutId = setTimeout(saveProject, 2000); // 2 second debounce
+    const timeoutId = setTimeout(saveProject, 500); // 0.5 second debounce
     return () => clearTimeout(timeoutId);
-  }, [clips, assets, projectName, isProjectLoaded]);  
+  }, [clips, assets, projectName, isProjectLoaded, projectCopyName]);  
+
+
+useEffect( ()  =>
+
+{
+
+     const detectAmountFiles = async () => 
+     {
+         if(changed)
+        {
+          const files = await invoke<string[]>('list_project_files', { 
+          projectPath: currentProjectPath 
+          });
+
+          setProjectsMains(files.sort())
+
+          setChanged(false)
+
+        }
+     }
+
+     detectAmountFiles()
+     
+    
+}, [changed])
 
 
 
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Delete' && selectedClipId !== null) {
-          // Deleta o clip que tem o ID guardado no estado
-          setClips(prev => prev.filter(c => c.id !== selectedClipId));
-          // Reseta a seleção para ninguém ficar selecionado
-          setSelectedClipId(null);
+      if (e.key === 'Delete') {
+          // Scenario A: Deleting a specific clip from timeline
+          if (selectedClipId !== null) {
+            setClips(prev => prev.filter(c => c.id !== selectedClipId));
+            setSelectedClipId(null);
+            showNotify("Clip removed", "success");
+          } 
+          // Scenario B: Deleting an Asset and ALL its clips (your logic)
+          else if (selectedAsset !== null) {
+            setAssets(prev => prev.filter(asset => asset !== selectedAsset));
+            setClips(prev => prev.filter(c => c.name !== selectedAsset));
+            setSelectedAsset(null);
+            showNotify("Asset and associated clips removed", "success");
+          }
         }
+
+
+        // CTRL + Z (Undo)
+        if (e.ctrlKey && e.key.toLowerCase() === 'z') {
+          e.preventDefault();
+          console.log("Z")
+          handleFileHistoryNavigation(-1);
+        }
+        // CTRL + Y (Redo)
+        if (e.ctrlKey && e.key.toLowerCase() === 'y') {
+          e.preventDefault();
+          handleFileHistoryNavigation(+1);
+        }
+      
+
+
+
+
+
       };
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
     }, [selectedClipId, clips]);
+
+
+
+
+
+
+
+
+
+    //Function to navigate between .project versions
+    const handleFileHistoryNavigation = (direction:number) =>
+    {
+      console.log("handleFileHistoryNavigation")
+
+    //Check if we have a copyOf in present file  
+    const index = projectCopyName ? projectsMains.indexOf(projectCopyName) : -1;
+    if(index == -1) 
+    {
+
+
+      /*go to penultimate project that is projectsMains[projectsMains.length -1],
+      in this case projectsMains.length -1 is the index of penultimate, elemente
+      the actual chage of state (CopyName triggers SaveProject)
+
+
+
+
+       */
+      projectsMains.length -1  >= 0 && direction == -1 ?
+        setProjectCopyName(projectsMains[projectsMains.length -1])
+         :
+        showNotify("There is not more file in this direction", "error");
+  
+      console.log("history", index, direction, projectCopyName, projectsMains.length)
+      return
+    }
+
+
+    //check if the sum will be inside the total size of mains
+    if( index + direction < projectsMains.length && index + direction >= 0)
+    {
+        setProjectCopyName(projectsMains[index+direction])
+    }
+    else
+    {
+      showNotify("There is not more file in this direction", "error");
+      
+    }
+
+    console.log("history", index, direction, projectCopyName, projectsMains.length)
+    return
+
+
+
+}
+
+
+
+
+
+
+
+
+
 
   // --- TAURI V2 NATIVE DRAG & DROP LISTENER FOR FILES FROM OS (NOT ASSETS) ---
   useEffect(() => {
@@ -249,8 +417,11 @@ export default function App() {
 
 
         // --- ADD CLIP ---
+
+        //Wait 1 milisecond to avoid the id repeat
+        await new Promise(resolve => setTimeout(resolve, 1));
         setClips(prev => [...prev, {
-          id: Date.now() + Math.random(),
+          id: Date.now(),
           name: fileName,
           start: dropTime,
           duration: 10,
@@ -323,11 +494,66 @@ export default function App() {
   };
 
 const openProject = async (path: string) => {
+
+  console.log('path puro', path)
   localStorage.setItem("current_project_path", path);
   
   try {
     const rawData = await invoke('load_latest_project', { projectPath: path });
-    const parsed = JSON.parse(rawData as string);
+    var parsed = JSON.parse(rawData as string);
+
+     const files = await invoke<string[]>('list_project_files', { 
+      projectPath: path 
+    });
+
+    console.log("Main when it is open", files.length)
+    setProjectsMains(files)
+
+
+
+    //if the project refers to another
+    if(parsed.copyOf)
+    {
+     console.log('copyOf detected: ', parsed.copyOf) 
+
+     var  rawJson = await invoke<string>('read_specific_file', { 
+      projectPath: currentProjectPath, 
+      fileName: parsed.copyOf 
+      });
+
+      // 2. Parse into our Interface
+      var  parsedData: ProjectFileData = JSON.parse(rawJson);
+
+      //while refer to another file
+      while(parsedData.copyOf)
+      {
+          rawJson = await invoke<string>('read_specific_file', { 
+          projectPath: currentProjectPath, 
+            fileName: parsedData.copyOf 
+          });
+
+          // 2. Parse into our Interface
+          parsedData = JSON.parse(rawJson);
+      }
+
+      parsed = parsedData
+      setProjectCopyName(parsed.copyOf)
+
+
+      console.log('copy name', projectCopyName)
+      console.log('mains', projectsMains)
+
+
+
+
+
+    }
+    
+    
+    
+    setProjectName(parsed.projectName)
+    
+
 
     // Update states first
     setClips(parsed.clips || []);
@@ -339,7 +565,7 @@ const openProject = async (path: string) => {
       0
     );
     const indices = Array.from({ length: maxTrackId + 1 }, (_, i) => i);
-    console.log('indices', indices)
+    //updates tracks
     setTracks(indices)
     
     // Now allow saving
@@ -349,6 +575,9 @@ const openProject = async (path: string) => {
     console.log("No previous project file found, starting fresh.");
     setIsProjectLoaded(true); // Allow saving for new projects too
     setIsSetupOpen(false);
+    setProjectCopyName(null)
+    setProjectsMains([])
+
   }
 };
 
@@ -376,8 +605,12 @@ const openProject = async (path: string) => {
     
     
     e.dataTransfer.setData("assetName", assetName);
-    e.dataTransfer.setData("color", color);
-    e.dataTransfer.setData("previousTrack", trackId.toString());
+    
+    if(color)
+      e.dataTransfer.setData("color", color);
+
+    if(trackId) 
+      e.dataTransfer.setData("previousTrack", trackId.toString())
 
     e.dataTransfer.effectAllowed = "copy";
 
@@ -392,6 +625,10 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   e.stopPropagation();
 
   const assetName = e.dataTransfer.getData("assetName");
+
+  console.log('assetName',assetName)
+
+
   const color = e.dataTransfer.getData("color");
 
   const previousTrackRaw = e.dataTransfer.getData("previousTrack");
@@ -431,9 +668,13 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
       return;
     }
 
+
     // 4. Create the new clip with the calculated duration
+
+    //Wait 1 milisecond to avoid the id repeat
+    new Promise(resolve => setTimeout(resolve, 1));
     const newClip: Clip = {
-      id: Date.now() + Math.random(),
+      id: Date.now(),
       name: assetName,
       start: dropTime,
       duration: finalDuration,
@@ -481,7 +722,11 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     setTimeout(() => setNotification(null), 3000);
   };
 
+  
+  //open main page with projects
   useEffect(() => { if (rootPath) loadProjects(); }, [rootPath]);
+  
+  //oping project
   useEffect(() => { if (!isSetupOpen && currentProjectPath) loadAssets(); }, [isSetupOpen]);
 
   // --- RENDER ---
@@ -596,9 +841,11 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: 1, x: 0 }}
                     key={index}
-                    className="bg-[#151515] border border-zinc-800 p-2 rounded-lg flex items-center gap-3 group hover:border-zinc-600 transition-all cursor-grab active:cursor-grabbing"
+                    onClick={() => setSelectedAsset(asset)}
+                    className={`bg-[#151515] border border-zinc-800 p-2 rounded-lg flex items-center gap-3 group hover:border-zinc-600 transition-all cursor-grab active:cursor-grabbing
+                    ${selectedAsset === asset ? 'ring-2 ring-white' : ''}`}
                     draggable="true"
-                    onDragStart={(e) => handleDragStart(e, asset)}
+                    onDragStart={(e) => handleDragStart(e, null, null, asset, false, null)}
                   >
                     <div className="w-12 h-8 bg-black rounded flex items-center justify-center">
                       <Play size={10} className="text-zinc-700 group-hover:text-red-500" />

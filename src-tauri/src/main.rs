@@ -12,13 +12,54 @@ use std::process::Command;
 
 
 #[tauri::command]
+fn list_project_files(project_path: String) -> Result<Vec<String>, String> {
+    let paths = fs::read_dir(project_path).map_err(|e| e.to_string())?;
+    let mut files: Vec<String> = paths
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".project"))
+        .collect();
+    files.sort(); // Sort by timestamp in name
+    Ok(files)
+}
+
+#[tauri::command]
+fn read_specific_file(project_path: String, file_name: String) -> Result<String, String> {
+    let mut path = PathBuf::from(project_path);
+    path.push(file_name);
+    fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn save_project_data(project_path: String, data: String, timestamp: u64) -> Result<(), String> {
     let mut path = PathBuf::from(&project_path);
-    // Construct filename: main1712345678.project
     let filename = format!("main{}.project", timestamp);
     path.push(filename);
 
-    fs::write(path, data).map_err(|e| e.to_string())
+    // 1. Write the new file
+    fs::write(&path, data).map_err(|e| e.to_string())?;
+
+    // 2. Clean up old files (Keep only the 50,000 newest)
+    let paths = fs::read_dir(&project_path).map_err(|e| e.to_string())?;
+    let mut project_files: Vec<_> = paths
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("project"))
+        .collect();
+
+    // Sort by name (which includes timestamp)
+    project_files.sort();
+
+    // If we exceed the limit, delete the oldest ones
+    let limit = 50000;
+    if project_files.len() > limit {
+        let to_delete = project_files.len() - limit;
+        for i in 0..to_delete {
+            let _ = fs::remove_file(&project_files[i]);
+        }
+    }
+
+    Ok(())
 }
 
 
@@ -149,12 +190,14 @@ fn delete_project(path: String) -> Result<(), String> {
     }
 }
 
+
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init()) // Inicializa o plugin de diálogo
-        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data])
+        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
