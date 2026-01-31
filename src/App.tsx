@@ -52,6 +52,14 @@ export default function App() {
   const currentProjectPath = localStorage.getItem("current_project_path");
   const timelineRef = useRef<HTMLDivElement>(null);
   const timelineContainerRef = useRef<HTMLDivElement>(null);
+
+
+  //div to resize clip in timeline
+  const moveleft = useRef<HTMLDivElement>(null);
+  const moveright = useRef<HTMLDivElement>(null);
+
+
+
   const isInitialMount = useRef(true);
   const [isProjectLoaded, setIsProjectLoaded] = useState(false);
 
@@ -91,6 +99,39 @@ export default function App() {
       }
     }));
   };
+
+
+
+  //function to help handleResize cause Drag won't work because the Drag of Parent Element
+  const startResizing = (e: React.MouseEvent, clipId: number, side: 'left' | 'right') => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const startX = e.clientX;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      // Calcula quanto o mouse moveu desde o clique inicial
+      const deltaX = moveEvent.clientX - startX;
+      
+      // Chama sua função (que já está correta!)
+      handleResize(clipId, deltaX, side);
+    };
+
+    const onMouseUp = () => {
+      // Limpa os eventos quando soltar o mouse
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
+
+
+
+
+
   // Effect to handle automatic saving whenever project data changes
   useEffect(() => {
     const saveProject = async () => {
@@ -330,11 +371,14 @@ const openProject = async (path: string) => {
     }
   };
 
-  const handleDragStart = (e: React.DragEvent, assetName: string, deletePrevious: boolean = false, idToDelete: number = 0 ) => {
+  const handleDragStart = (e: React.DragEvent, color:string, trackId:number, assetName: string, deletePrevious: boolean = false, idToDelete: number = 0 ) => {
     
     
     
     e.dataTransfer.setData("assetName", assetName);
+    e.dataTransfer.setData("color", color);
+    e.dataTransfer.setData("previousTrack", trackId.toString());
+
     e.dataTransfer.effectAllowed = "copy";
 
     if(deletePrevious)
@@ -348,6 +392,10 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   e.stopPropagation();
 
   const assetName = e.dataTransfer.getData("assetName");
+  const color = e.dataTransfer.getData("color");
+
+  const previousTrackRaw = e.dataTransfer.getData("previousTrack");
+  const previousTrack = previousTrackRaw ? Number(previousTrackRaw) : null;
   
   if (assetName) {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -389,9 +437,10 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
       name: assetName,
       start: dropTime,
       duration: finalDuration,
-      color: getRandomColor(),
+      color:  previousTrack != trackId ?  getRandomColor() : color, //change the color only when change the track
       trackId: trackId
     };
+
 
     // 5. Update state: Add new clip and remove the old one if it was a move operation
     setClips(prevClips => {
@@ -609,7 +658,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
                       <motion.div 
                         key={clip.id}
                         draggable = "true"
-                        onDragStart={(e) => handleDragStart(e, clip.name, true , clip.id)}
+                        onDragStart={(e) => handleDragStart(e, clip.color, trackId ,clip.name, true , clip.id)}
                         onClick={() => setSelectedClipId(clip.id)}
                         className={`absolute inset-y-2 ${clip.color} rounded-lg flex items-center shadow-xl group z-10 
                         ${selectedClipId === clip.id ? 'ring-2 ring-white' : ''}`}
@@ -621,11 +670,17 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
                         <div 
                           className="absolute left-0 inset-y-0 w-2 cursor-ew-resize bg-black/20 hover:bg-white/40 z-20"
                           onClick={()=> {console.log('left active')}}
+                          ref={moveright}
+
+                          onMouseDown={(e) => startResizing(e, clip.id, 'left')}
+
+                          
                         />
-                        <span className="text-[10px] font-black text-white truncate uppercase italic">{clip.name}</span>
+                        <span className="text-[10px] font-black text-white truncate uppercase italic" >{clip.name}</span>
 
                         <div 
                            className="absolute right-0 inset-y-0 w-2 cursor-ew-resize bg-black/20 hover:bg-white/40 z-20"
+                           ref={moveleft}
                         />
 
                       </motion.div>
