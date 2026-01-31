@@ -69,28 +69,28 @@ export default function App() {
   // Helper to get a random color
   const getRandomColor = () => CLIP_COLORS[Math.floor(Math.random() * CLIP_COLORS.length)];
 
-
+  const [selectedClipId, setSelectedClipId] = useState<number | null>(null);
 
   // Code to make the clip resizable 
   const handleResize = (id: number, deltaX: number, side: 'left' | 'right') => {
-  setClips(prev => prev.map(clip => {
-    if (clip.id !== id) return clip;
+    setClips(prev => prev.map(clip => {
+      if (clip.id !== id) return clip;
 
-    const deltaSeconds = deltaX / PIXELS_PER_SECOND;
-    
-    if (side === 'right') {
-      // Growing or shrinking from the right
-      const newDuration = Math.max(0.5, clip.duration + deltaSeconds);
-      return { ...clip, duration: newDuration };
-    } else {
-      // Growing or shrinking from the left
-      // This changes both position AND duration
-      const newStart = clip.start + deltaSeconds;
-      const newDuration = Math.max(0.5, clip.duration - deltaSeconds);
-      return { ...clip, start: newStart, duration: newDuration };
-    }
-  }));
-};
+      const deltaSeconds = deltaX / PIXELS_PER_SECOND;
+      
+      if (side === 'right') {
+        // Growing or shrinking from the right
+        const newDuration = Math.max(0.5, clip.duration + deltaSeconds);
+        return { ...clip, duration: newDuration };
+      } else {
+        // Growing or shrinking from the left
+        // This changes both position AND duration
+        const newStart = clip.start + deltaSeconds;
+        const newDuration = Math.max(0.5, clip.duration - deltaSeconds);
+        return { ...clip, start: newStart, duration: newDuration };
+      }
+    }));
+  };
   // Effect to handle automatic saving whenever project data changes
   useEffect(() => {
     const saveProject = async () => {
@@ -120,7 +120,22 @@ export default function App() {
     return () => clearTimeout(timeoutId);
   }, [clips, assets, projectName, isProjectLoaded]);  
 
-  // --- TAURI V2 NATIVE DRAG & DROP LISTENER ---
+
+
+  useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Delete' && selectedClipId !== null) {
+          // Deleta o clip que tem o ID guardado no estado
+          setClips(prev => prev.filter(c => c.id !== selectedClipId));
+          // Reseta a seleção para ninguém ficar selecionado
+          setSelectedClipId(null);
+        }
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [selectedClipId, clips]);
+
+  // --- TAURI V2 NATIVE DRAG & DROP LISTENER FOR FILES FROM OS (NOT ASSETS) ---
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
@@ -596,10 +611,23 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
                         draggable = "true"
                         onDragStart={(e) => handleDragStart(e, clip.name, true , clip.id)}
                         onClick={() => setSelectedClipId(clip.id)}
-                        className={`absolute inset-y-2 ${clip.color} border-x border-white/20 rounded-lg flex items-center px-4 cursor-grab active:cursor-grabbing shadow-xl z-10`}
+                        className={`absolute inset-y-2 ${clip.color} rounded-lg flex items-center shadow-xl group z-10 
+                        ${selectedClipId === clip.id ? 'ring-2 ring-white' : ''}`}
                         style={{ width: clip.duration * PIXELS_PER_SECOND, left: clip.start * PIXELS_PER_SECOND }}
                       >
+
+
+                        {/* Left Resize Handle */}
+                        <div 
+                          className="absolute left-0 inset-y-0 w-2 cursor-ew-resize bg-black/20 hover:bg-white/40 z-20"
+                          onClick={()=> {console.log('left active')}}
+                        />
                         <span className="text-[10px] font-black text-white truncate uppercase italic">{clip.name}</span>
+
+                        <div 
+                           className="absolute right-0 inset-y-0 w-2 cursor-ew-resize bg-black/20 hover:bg-white/40 z-20"
+                        />
+
                       </motion.div>
                     ))}
 
