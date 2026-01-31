@@ -45,12 +45,80 @@ export default function App() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [clips, setClips] = useState<Clip[]>([]);
   const [tracks, setTracks] = useState<number[]>([0]);
+
+  //deleteClipId is used to store the id of a clip that is changed of track
   const [deleteClipId, setDeleteClipId] = useState<number | null>(null);
 
   const currentProjectPath = localStorage.getItem("current_project_path");
   const timelineRef = useRef<HTMLDivElement>(null);
   const timelineContainerRef = useRef<HTMLDivElement>(null);
+  const isInitialMount = useRef(true);
+  const [isProjectLoaded, setIsProjectLoaded] = useState(false);
 
+  //color for clips
+  const CLIP_COLORS = [
+    'bg-blue-600',   // Ocean
+    'bg-emerald-600', // Forest
+    'bg-violet-600',  // Royal
+    'bg-amber-600',   // Gold
+    'bg-rose-600',    // Wine
+    'bg-cyan-600',    // Sky
+    'bg-indigo-600'   // Galaxy
+  ];
+
+  // Helper to get a random color
+  const getRandomColor = () => CLIP_COLORS[Math.floor(Math.random() * CLIP_COLORS.length)];
+
+
+
+  // Code to make the clip resizable 
+  const handleResize = (id: number, deltaX: number, side: 'left' | 'right') => {
+  setClips(prev => prev.map(clip => {
+    if (clip.id !== id) return clip;
+
+    const deltaSeconds = deltaX / PIXELS_PER_SECOND;
+    
+    if (side === 'right') {
+      // Growing or shrinking from the right
+      const newDuration = Math.max(0.5, clip.duration + deltaSeconds);
+      return { ...clip, duration: newDuration };
+    } else {
+      // Growing or shrinking from the left
+      // This changes both position AND duration
+      const newStart = clip.start + deltaSeconds;
+      const newDuration = Math.max(0.5, clip.duration - deltaSeconds);
+      return { ...clip, start: newStart, duration: newDuration };
+    }
+  }));
+};
+  // Effect to handle automatic saving whenever project data changes
+  useEffect(() => {
+    const saveProject = async () => {
+      // DO NOT save if the project hasn't finished loading yet
+      if (!isProjectLoaded || !currentProjectPath) return;
+
+      const projectData = {
+        projectName,
+        assets,
+        clips,
+        lastModified: Date.now()
+      };
+
+      try {
+        await invoke('save_project_data', {
+          projectPath: currentProjectPath,
+          data: JSON.stringify(projectData),
+          timestamp: Date.now()
+        });
+        console.log("Project saved successfully.");
+      } catch (err) {
+        console.error("Auto-save failed:", err);
+      }
+    };
+
+    const timeoutId = setTimeout(saveProject, 2000); // 2 second debounce
+    return () => clearTimeout(timeoutId);
+  }, [clips, assets, projectName, isProjectLoaded]);  
 
   // --- TAURI V2 NATIVE DRAG & DROP LISTENER ---
   useEffect(() => {
@@ -82,6 +150,8 @@ export default function App() {
       }
     };
   }, [isSetupOpen, currentProjectPath]);
+
+
     const handleDragOver = (e: React.DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -128,7 +198,7 @@ export default function App() {
           name: fileName,
           start: dropTime,
           duration: 10,
-          color: 'bg-blue-600',
+          color: getRandomColor(),
           trackId: finalTrackId
         }]);
       }
@@ -140,37 +210,6 @@ export default function App() {
 };
 
 
-const handleEnd = async (mouseX: number, mouseY: number) =>
-{
-
-
-  const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
-  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-
-  const relativeX = mouseX - timelineBounds.left + scrollLeft;
-  const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND);
-  
-
-
-
-        const TRACK_HEIGHT = 80;
-        const relativeY = mouseY - timelineBounds.top;
-        const targetTrack = Math.floor(relativeY / TRACK_HEIGHT);
-        const finalTrackId = Math.max(0, targetTrack);
-
-
-        // --- ADD CLIP ---
-        setClips(prev => [...prev, {
-          id: Date.now() + Math.random(),
-          name: fileName,
-          start: dropTime,
-          duration: 10,
-          color: 'bg-blue-600',
-          trackId: finalTrackId
-        }]);
-
-
-}
 
   useEffect(() => {
     const preventDefault = (e: DragEvent) => {
@@ -227,21 +266,35 @@ const handleEnd = async (mouseX: number, mouseY: number) =>
     }
   };
 
-  const openProject = (path: string) => {
-    localStorage.setItem("current_project_path", path);
-    setIsSetupOpen(false);
-  };
+const openProject = async (path: string) => {
+  localStorage.setItem("current_project_path", path);
+  
+  try {
+    const rawData = await invoke('load_latest_project', { projectPath: path });
+    const parsed = JSON.parse(rawData as string);
 
-  const handleDeleteProject = async () => {
-    if (projectToDelete) {
-      try {
-        await invoke('delete_project', { path: projectToDelete.path });
-        setProjectToDelete(null);
-        loadProjects();
-        showNotify("Project Deleted", "success");
-      } catch (e) { showNotify("Delete failed", "error"); }
-    }
-  };
+    // Update states first
+    setClips(parsed.clips || []);
+    setAssets(parsed.assets || []);
+    setProjectName(parsed.projectName || "Unnamed Project");
+
+    const maxTrackId = parsed.clips.reduce((max, clip) => 
+      clip.trackId > max ? clip.trackId : max, 
+      0
+    );
+    const indices = Array.from({ length: maxTrackId + 1 }, (_, i) => i);
+    console.log('indices', indices)
+    setTracks(indices)
+    
+    // Now allow saving
+    setIsProjectLoaded(true); 
+    setIsSetupOpen(false);
+  } catch (err) {
+    console.log("No previous project file found, starting fresh.");
+    setIsProjectLoaded(true); // Allow saving for new projects too
+    setIsSetupOpen(false);
+  }
+};
 
   // --- EDITOR HANDLERS ---
 
@@ -286,14 +339,19 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
     const x = e.clientX - rect.left + scrollLeft;
     
+
+    
     // Convert drop X position to timeline seconds
     const dropTime = x / PIXELS_PER_SECOND;
     const MAX_DEFAULT_DURATION = 40; //  default duration set to 40s
 
     // 1. Find the nearest clip on the SAME track that starts AFTER our drop point
+
+    //1.1 If the nextClip it is the own clip the duration will be until another , WE USE THE deleteClipId TO CHECK THIS
     const nextClip = clips
-      .filter(c => c.trackId === trackId && c.start > dropTime)
+      .filter(c => c.trackId === trackId && c.start > dropTime && c.id != deleteClipId)
       .reduce((prev, curr) => (prev === null || curr.start < prev.start ? curr : prev), null as Clip | null);
+
 
     // 2. Calculate dynamic duration
     // If there is a clip ahead, duration is the gap between drop and next clip (clamped at 40s)
@@ -316,7 +374,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
       name: assetName,
       start: dropTime,
       duration: finalDuration,
-      color: 'bg-red-600',
+      color: getRandomColor(),
       trackId: trackId
     };
 
@@ -537,13 +595,16 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
                         key={clip.id}
                         draggable = "true"
                         onDragStart={(e) => handleDragStart(e, clip.name, true , clip.id)}
-                        
+                        onClick={() => setSelectedClipId(clip.id)}
                         className={`absolute inset-y-2 ${clip.color} border-x border-white/20 rounded-lg flex items-center px-4 cursor-grab active:cursor-grabbing shadow-xl z-10`}
                         style={{ width: clip.duration * PIXELS_PER_SECOND, left: clip.start * PIXELS_PER_SECOND }}
                       >
                         <span className="text-[10px] font-black text-white truncate uppercase italic">{clip.name}</span>
                       </motion.div>
                     ))}
+
+
+                    
                   </div>
                 ))}
 

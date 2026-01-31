@@ -10,6 +10,39 @@ struct Project {
 
 use std::process::Command;
 
+
+#[tauri::command]
+fn save_project_data(project_path: String, data: String, timestamp: u64) -> Result<(), String> {
+    let mut path = PathBuf::from(&project_path);
+    // Construct filename: main1712345678.project
+    let filename = format!("main{}.project", timestamp);
+    path.push(filename);
+
+    fs::write(path, data).map_err(|e| e.to_string())
+}
+
+
+//function to load that last state of project
+#[tauri::command]
+fn load_latest_project(project_path: String) -> Result<String, String> {
+    let paths = fs::read_dir(project_path).map_err(|e| e.to_string())?;
+    
+    // Filter files ending with .project and find the one with the highest timestamp in name
+    let mut project_files: Vec<_> = paths
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("project"))
+        .collect();
+
+    project_files.sort(); // Sorts alphabetically/numerically
+    
+    if let Some(latest) = project_files.last() {
+        fs::read_to_string(latest).map_err(|e| e.to_string())
+    } else {
+        Err("No project file found".into())
+    }
+}
+
 #[tauri::command]
 async fn download_youtube_video(project_path: String, url: String) -> Result<String, String> {
     let mut download_path = std::path::PathBuf::from(&project_path);
@@ -121,7 +154,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init()) // Inicializa o plugin de diálogo
-        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video])
+        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
