@@ -84,6 +84,22 @@ fn load_latest_project(project_path: String) -> Result<String, String> {
     }
 }
 
+
+#[tauri::command]
+fn load_specific_project(project_path: String, file_name: String) -> Result<String, String> {
+    // 1. Constrói o caminho completo: project_path/file_name
+    let mut path = PathBuf::from(&project_path);
+    path.push(&file_name);
+
+    // 2. Verifica se o arquivo existe e é um arquivo de verdade
+    if !path.exists() {
+        return Err(format!("Arquivo não encontrado: {}", file_name));
+    }
+
+    // 3. Lê o conteúdo e retorna como String (JSON)
+    fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn download_youtube_video(project_path: String, url: String) -> Result<String, String> {
     let mut download_path = std::path::PathBuf::from(&project_path);
@@ -197,7 +213,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init()) // Inicializa o plugin de diálogo
-        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file])
+        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

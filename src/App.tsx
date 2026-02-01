@@ -68,12 +68,8 @@ export default function App() {
 
 
 
-  const isInitialMount = useRef(true);
   const [isProjectLoaded, setIsProjectLoaded] = useState(false);
-
-  //first 
   
-
   //color for clips
   const CLIP_COLORS = [
     'bg-blue-600',   // Ocean
@@ -92,9 +88,11 @@ export default function App() {
   const [selectedAsset, setSelectedAsset] = useState<string | null>(null);
 
 
-  //Code to navagate between main.project versions
+  //States to navagate between main.project versions
   const [projectCopyName, setProjectCopyName] = useState<string|null>(null);
   const [projectsMains, setProjectsMains] = useState<string[]>([]);
+  const [historyChanged, setHistoryChanged] = useState(false);
+
 
   //variavle to help detected any file add by function saveProject
   const [changed, setChanged] = useState<boolean>(false)
@@ -149,9 +147,14 @@ export default function App() {
 
   //all time copyname change will be reloadproject
   useEffect(() => { 
+
+    console.log('mudou1', currentProjectPath, isSetupOpen, projectCopyName)
     
-    if (currentProjectPath && isSetupOpen)
-      openProject(currentProjectPath.toString())  
+    if (currentProjectPath && !isSetupOpen)
+    {  
+      console.log('mudou')
+      openProject(currentProjectPath.toString(), projectCopyName) 
+    } 
     
   }, [projectCopyName])
 
@@ -181,8 +184,11 @@ export default function App() {
         lastModified: Date.now()
       };
 
-      if (projectCopyName) {
+      //only set copyOf if the user use the Ctrl+Z or Y
+      if (projectCopyName && historyChanged) {
         projectData.copyOf = projectCopyName;
+        setHistoryChanged(false)
+        console.log('historychanged falso')
       }
 
       
@@ -307,20 +313,31 @@ useEffect( ()  =>
 
 
        */
-      projectsMains.length -1  >= 0 && direction == -1 ?
-        setProjectCopyName(projectsMains[projectsMains.length -1])
-         :
+      if (projectsMains.length -1  >= 0 && direction == -1 )
+      {  setProjectCopyName(projectsMains[projectsMains.length -1])
+        setHistoryChanged(true)
+        console.log('historychanged verdadeiro')
+
+      }
+      else
+      {
         showNotify("There is not more file in this direction", "error");
+      }
   
       console.log("history", index, direction, projectCopyName, projectsMains.length)
       return
     }
 
+    console.log("Index not -1")
 
     //check if the sum will be inside the total size of mains
     if( index + direction < projectsMains.length && index + direction >= 0)
     {
         setProjectCopyName(projectsMains[index+direction])
+        setHistoryChanged(true)
+        console.log('historychanged verdadeiro')
+
+        console.log("going to", projectsMains[index+direction], index+direction)
     }
     else
     {
@@ -493,14 +510,25 @@ useEffect( ()  =>
     }
   };
 
-const openProject = async (path: string) => {
+const openProject = async (path: string, copyname: string|null=null) => {
 
   console.log('path puro', path)
   localStorage.setItem("current_project_path", path);
   
   try {
-    const rawData = await invoke('load_latest_project', { projectPath: path });
-    var parsed = JSON.parse(rawData as string);
+    if(copyname)
+    {
+      const rawData = await invoke('load_specific_project', { projectPath: path, fileName: copyname });
+      var parsed = JSON.parse(rawData as string);
+
+      console.log('load_specific_project')
+    }
+    else
+    {
+      const rawData = await invoke('load_latest_project', { projectPath: path });
+      var parsed = JSON.parse(rawData as string);
+      
+    }  
 
      const files = await invoke<string[]>('list_project_files', { 
       projectPath: path 
@@ -525,7 +553,7 @@ const openProject = async (path: string) => {
       var  parsedData: ProjectFileData = JSON.parse(rawJson);
 
       //while refer to another file
-      while(parsedData.copyOf)
+      /*while(parsedData.copyOf)
       {
           rawJson = await invoke<string>('read_specific_file', { 
           projectPath: currentProjectPath, 
@@ -535,6 +563,7 @@ const openProject = async (path: string) => {
           // 2. Parse into our Interface
           parsedData = JSON.parse(rawJson);
       }
+          */
 
       parsed = parsedData
       setProjectCopyName(parsed.copyOf)
