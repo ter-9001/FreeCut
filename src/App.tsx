@@ -213,11 +213,13 @@ export default function App() {
   useEffect(() => {
 
     
-
+    
 
 
     const saveProject = async () => {
       // DO NOT save if the project hasn't finished loading yet
+      console.log(clips)
+
       if (!isProjectLoaded || !currentProjectPath) return;
 
       
@@ -429,63 +431,67 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
 
   // Function to lead with Drag direct from OS
 
-const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number) => {
-  if (!currentProjectPath) return;
+  const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number) => {
+    if (!currentProjectPath) return;
 
-  const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
-  if (!timelineBounds) return;
+    const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
+    
+    // SE O DROP FOR FORA DA TIMELINE (ex: na barra lateral ou no botão Import)
+    // Apenas importamos os arquivos como assets e não criamos clips/tracks.
+    const isOutsideTimeline = !timelineBounds || 
+      mouseX < timelineBounds.left || 
+      mouseX > timelineBounds.right || 
+      mouseY < timelineBounds.top || 
+      mouseY > timelineBounds.bottom;
 
-  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-  const relativeX = mouseX - timelineBounds.left + scrollLeft;
-  const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND);
-  const relativeY = mouseY - timelineBounds.top;
-
-  const TRACK_HEIGHT = 80;
-  const margin = 20;
-
-  for (const path of paths) {
-    try {
-      // 1. Importa o arquivo via Rust (Tauri)
-      await invoke('import_asset', { projectPath: currentProjectPath, filePath: path });
-      const fileName = path.split(/[\\/]/).pop() || "Asset";
-
-      // 2. Determina se o drop foi em uma track existente ou fora delas
-      const totalHeight = tracks.length * TRACK_HEIGHT;
-
-      if (relativeY < 0 || relativeY > totalHeight) {
-        // CASO A: Drop fora das tracks (acima da primeira ou abaixo da última)
-        // Usamos a função unificada que cria a track e o clip juntos
-        createClipOnNewTrack(fileName, dropTime, relativeY < 0);
-      } else {
-        // CASO B: Drop dentro da área de tracks existentes
-        const targetTrackIndex = Math.floor(relativeY / TRACK_HEIGHT);
-        const targetTrackId = tracks[targetTrackIndex];
-      
-        //Wait 1 milisecond to avoid the id repeat
-        new Promise(resolve => setTimeout(resolve, 1));
-
-        // Criamos o clip na track existente
-        const newClip: Clip = {
-          id: Date.now(),
-          name: fileName,
-          start: dropTime,
-          duration: 10, // Duração menor para drops nativos (comum em editores)
-          color: getRandomColor(),
-          trackId: targetTrackId
-        };
-
-        setClips(prev => [...prev, newClip]);
+    if (isOutsideTimeline) {
+      for (const path of paths) {
+        try {
+          await invoke('import_asset', { projectPath: currentProjectPath, filePath: path });
+        } catch (err) {
+          console.error("Import error:", err);
+        }
       }
-    } catch (err) {
-      console.error("Native Import Error:", err);
-      showNotify("Failed to import file", "error");
+      loadAssets(); // Atualiza a lista lateral
+      showNotify("Assets imported", "success");
+      return; // ENCERRA AQUI, não cria tracks nem clips
     }
-  }
-  
-  // Atualiza a lista de assets lateral
-  loadAssets();
-};
 
+    // --- SE CAIU NA TIMELINE, CONTINUA A LÓGICA ANTERIOR ---
+    const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+    const relativeX = mouseX - timelineBounds.left + scrollLeft;
+    const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND);
+    const relativeY = mouseY - timelineBounds.top;
+
+    const TRACK_HEIGHT = 80;
+
+    for (const path of paths) {
+      try {
+        await invoke('import_asset', { projectPath: currentProjectPath, filePath: path });
+        const fileName = path.split(/[\\/]/).pop() || "Asset";
+        const totalHeight = tracks.length * TRACK_HEIGHT;
+
+        if (relativeY < 0 || relativeY > totalHeight) {
+          createClipOnNewTrack(fileName, dropTime, relativeY < 0);
+        } else {
+          const targetTrackIndex = Math.floor(relativeY / TRACK_HEIGHT);
+          const targetTrackId = tracks[targetTrackIndex];
+          
+          setClips(prev => [...prev, {
+            id: Date.now() + Math.random(),
+            name: fileName,
+            start: dropTime,
+            duration: 10,
+            color: getRandomColor(),
+            trackId: targetTrackId
+          }]);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    loadAssets();
+  };
 
   useEffect(() => {
     const preventDefault = (e: DragEvent) => {
