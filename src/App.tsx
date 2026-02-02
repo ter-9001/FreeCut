@@ -92,6 +92,7 @@ export default function App() {
   const [projectCopyName, setProjectCopyName] = useState<string|null>(null);
   const [projectsMains, setProjectsMains] = useState<string[]>([]);
   const [historyChanged, setHistoryChanged] = useState(false);
+  const [icansaveProject, setSaveProject] = useState(true);
 
 
   //variavle to help detected any file add by function saveProject
@@ -169,8 +170,9 @@ export default function App() {
 
 
     const saveProject = async () => {
-      // DO NOT save if the project hasn't finished loading yet
-      if (!isProjectLoaded || !currentProjectPath) return;
+      // DO NOT save if the project hasn't finished loading yet or the system for some reason don't allow
+      if (!isProjectLoaded || !currentProjectPath || !icansaveProject) return;
+
 
       
 
@@ -188,8 +190,11 @@ export default function App() {
       if (projectCopyName && historyChanged) {
         projectData.copyOf = projectCopyName;
         setHistoryChanged(false)
+        setProjectCopyName(null) //clean if the user did not user the Ctrl's to avoid take the copy of previos modifications
+        setSaveProject(false) //prevent that the change above create a circle
         console.log('historychanged falso')
       }
+      
 
       
 
@@ -216,7 +221,7 @@ export default function App() {
 
     const timeoutId = setTimeout(saveProject, 500); // 0.5 second debounce
     return () => clearTimeout(timeoutId);
-  }, [clips, assets, projectName, isProjectLoaded, projectCopyName]);  
+  }, [clips, assets, projectName, isProjectLoaded, projectCopyName, icansaveProject]);  
 
 
 useEffect( ()  =>
@@ -268,12 +273,18 @@ useEffect( ()  =>
         if (e.ctrlKey && e.key.toLowerCase() === 'z') {
           e.preventDefault();
           console.log("Z")
+          updateMainFiles()
           handleFileHistoryNavigation(-1);
+          
+
+        
         }
         // CTRL + Y (Redo)
         if (e.ctrlKey && e.key.toLowerCase() === 'y') {
           e.preventDefault();
+          updateMainFiles()
           handleFileHistoryNavigation(+1);
+          
         }
       
 
@@ -289,15 +300,26 @@ useEffect( ()  =>
 
 
 
+    const updateMainFiles =  async () =>
+    {
+      const files = await invoke<string[]>('list_project_files', { 
+          projectPath: currentProjectPath 
+        });
 
+      console.log("Main when it is history", files.length)
+      setProjectsMains(files)
+    }
 
 
 
 
     //Function to navigate between .project versions
-    const handleFileHistoryNavigation = (direction:number) =>
+    const handleFileHistoryNavigation = async (direction:number) =>
     {
       console.log("handleFileHistoryNavigation")
+
+
+       
 
     //Check if we have a copyOf in present file  
     const index = projectCopyName ? projectsMains.indexOf(projectCopyName) : -1;
@@ -550,7 +572,7 @@ const openProject = async (path: string, copyname: string|null=null) => {
       });
 
       // 2. Parse into our Interface
-      var  parsedData: ProjectFileData = JSON.parse(rawJson);
+      //var  parsedData: ProjectFileData = JSON.parse(rawJson);
 
       //while refer to another file
       /*while(parsedData.copyOf)
@@ -565,7 +587,8 @@ const openProject = async (path: string, copyname: string|null=null) => {
       }
           */
 
-      parsed = parsedData
+      parsed = JSON.parse(rawJson);
+
       setProjectCopyName(parsed.copyOf)
 
 
