@@ -464,17 +464,18 @@ const openProject = async (path: string) => {
     }
   };
 
-  const handleDragStart = (e: React.DragEvent, color:string, trackId:number, assetName: string, deletePrevious: boolean = false, idToDelete: number = 0 ) => {
+  const handleDragStart = (e: React.DragEvent, color:string, trackId:number, duration:number, assetName: string, deletePrevious: boolean = false, idToDelete: number = 0 ) => {
     
     
     
     e.dataTransfer.setData("assetName", assetName);
     
-    if(color)
-      e.dataTransfer.setData("color", color);
+    e.dataTransfer.setData("color", color);
 
-    if(trackId) 
-      e.dataTransfer.setData("previousTrack", trackId.toString())
+    e.dataTransfer.setData("previousTrack", trackId.toString())
+
+    e.dataTransfer.setData("duration", duration.toString())
+
 
     e.dataTransfer.effectAllowed = "copy";
 
@@ -490,7 +491,6 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
 
   const assetName = e.dataTransfer.getData("assetName");
 
-  console.log('assetName',assetName)
 
 
   const color = e.dataTransfer.getData("color");
@@ -498,6 +498,11 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   const previousTrackRaw = e.dataTransfer.getData("previousTrack");
   const previousTrack = previousTrackRaw ? Number(previousTrackRaw) : null;
   
+  const durationRaw = e.dataTransfer.getData("duration");
+  const duration = durationRaw ? Number(durationRaw) : null;
+  
+
+
   if (assetName) {
     const rect = e.currentTarget.getBoundingClientRect();
     const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
@@ -507,7 +512,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     
     // Convert drop X position to timeline seconds
     const dropTime = x / PIXELS_PER_SECOND;
-    const MAX_DEFAULT_DURATION = 40; //  default duration set to 40s
+    const MAX_DEFAULT_DURATION = duration ? duration : 40; //  default duration set to 40s
 
     // 1. Find the nearest clip on the SAME track that starts AFTER our drop point
 
@@ -709,7 +714,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
                     className={`bg-[#151515] border border-zinc-800 p-2 rounded-lg flex items-center gap-3 group hover:border-zinc-600 transition-all cursor-grab active:cursor-grabbing
                     ${selectedAsset === asset ? 'ring-2 ring-white' : ''}`}
                     draggable="true"
-                    onDragStart={(e) => handleDragStart(e, null, null, asset, false, null)}
+                    onDragStart={(e) => handleDragStart(e, null, null, null, asset, false, null)}
                   >
                     <div className="w-12 h-8 bg-black rounded flex items-center justify-center">
                       <Play size={10} className="text-zinc-700 group-hover:text-red-500" />
@@ -769,7 +774,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
                       <motion.div 
                         key={clip.id}
                         draggable = "true"
-                        onDragStart={(e) => handleDragStart(e, clip.color, trackId ,clip.name, true , clip.id)}
+                        onDragStart={(e) => handleDragStart(e, clip.color, trackId, clip.duration ,clip.name, true , clip.id)}
                         onClick={() => setSelectedClipId(clip.id)}
                         className={`absolute inset-y-2 ${clip.color} rounded-lg flex items-center shadow-xl group z-10 
                         ${selectedClipId === clip.id ? 'ring-2 ring-white' : ''}`}
