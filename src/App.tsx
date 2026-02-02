@@ -979,6 +979,9 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
         </div>
       )}
 
+
+      
+
       {/* New Project Modal */}
       <AnimatePresence>
         {isCreatingNew && (
