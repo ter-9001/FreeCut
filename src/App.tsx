@@ -84,27 +84,96 @@ export default function App() {
   const [selectedClipId, setSelectedClipId] = useState<number | null>(null);
   const [selectedAsset, setSelectedAsset] = useState<string | null>(null);
 
+  /**
+ * Calculates the boundaries for a specific clip
+ */
+  const getClipBoundaries = (clipId: number) => {
+    const targetClip = clips.find(c => c.id === clipId);
+    if (!targetClip) return { minStart: 0, maxDuration: 40 };
 
+    // 1. Get all other clips on the same track
+    const trackClips = clips
+      .filter(c => c.trackId === targetClip.trackId && c.id !== clipId)
+      .sort((a, b) => a.start - b.start);
+
+    // 2. Find the neighbor immediately before (Left)
+    const previousClip = [...trackClips]
+      .reverse()
+      .find(c => c.start <= targetClip.start);
+
+    // 3. Find the neighbor immediately after (Right)
+    const nextClip = trackClips.find(c => c.start >= (targetClip.start + targetClip.duration));
+
+    // --- CALCULATIONS ---
+
+    // Boundary Left: The end of the previous clip or 0
+    const minStart = previousClip ? (previousClip.start + previousClip.duration) : 0;
+
+    // Boundary Right: The start of the next clip or a fixed maximum (e.g., 2 hours)
+    const absoluteLimit = 7200; // 2 hours in seconds
+    const maxEndTimestamp = nextClip ? nextClip.start : absoluteLimit;
+
+    // Max Duration is the space between our current start and the next obstacle
+    const maxDuration = maxEndTimestamp - targetClip.start;
+
+    return {
+      minStart,    // How far back the clip can go
+      maxDuration, // Maximum length it can have at current start position
+      maxEndTimestamp // Absolute point it cannot cross
+    };
+  };
+
+
+
+  // Optimized to handle both existing clips and new drops in a new track
+  const getPositionBoundaries = (trackId: number, dropTime: number, excludeId: number | null) => {
+    // Filter clips on the same track, excluding the one being moved
+    const trackClips = clips
+      .filter(c => c.trackId === trackId && c.id !== excludeId)
+      .sort((a, b) => a.start - b.start);
+
+    // Find the clip before the drop point
+    const previousClip = [...trackClips]
+      .reverse()
+      .find(c => c.start <= dropTime);
+
+    // Find the clip after the drop point
+    const nextClip = trackClips.find(c => c.start > dropTime);
+
+    const minStart = previousClip ? (previousClip.start + previousClip.duration) : 0;
+    const maxEndTimestamp = nextClip ? nextClip.start : 7200; // 2h limit
+
+    return { minStart, maxEndTimestamp };
+  };
 
 
 
   // Code to make the clip resizable 
   const handleResize = (id: number, deltaX: number, side: 'left' | 'right') => {
+    const { minStart, maxEndTimestamp } = getClipBoundaries(id);
+    const deltaSeconds = deltaX / PIXELS_PER_SECOND;
+
     setClips(prev => prev.map(clip => {
       if (clip.id !== id) return clip;
 
-      const deltaSeconds = deltaX / PIXELS_PER_SECOND;
-      
       if (side === 'right') {
-        // Growing or shrinking from the right
+        // Limit: current start + new duration cannot exceed next clip's start
         const newDuration = Math.max(0.5, clip.duration + deltaSeconds);
-        return { ...clip, duration: newDuration };
+        const finalDuration = (clip.start + newDuration > maxEndTimestamp) 
+          ? (maxEndTimestamp - clip.start) 
+          : newDuration;
+
+        return { ...clip, duration: finalDuration };
       } else {
-        // Growing or shrinking from the left
-        // This changes both position AND duration
-        const newStart = clip.start + deltaSeconds;
-        const newDuration = Math.max(0.5, clip.duration - deltaSeconds);
-        return { ...clip, start: newStart, duration: newDuration };
+        // Limit: new start cannot be less than previous clip's end
+        let newStart = clip.start + deltaSeconds;
+        if (newStart < minStart) newStart = minStart;
+
+        // Adjust duration so the end point stays fixed while moving the start
+        const endPoint = clip.start + clip.duration;
+        const finalDuration = Math.max(0.5, endPoint - newStart);
+
+        return { ...clip, start: newStart, duration: finalDuration };
       }
     }));
   };
@@ -296,60 +365,126 @@ export default function App() {
       e.dataTransfer.dropEffect = "copy";
     };
 
+const createClipOnNewTrack = (assetName: string, dropTime: number, isAtTop: boolean) => {
+  
+  //Higher Track more one
+  const newTrackId = tracks.length > 0 ? Math.max(...tracks) + 1 : 0;
+  
+  // 2. Atualizar Tracks com Higienização
+  setTracks(prevTracks => {
+    const updatedTracks = [...prevTracks, newTrackId];
+    return Array.from(new Set(updatedTracks));
+  });
+
+  // 3. Criar o Clip usando o ID que acabamos de gerar (newTrackId)
+  const newClip: Clip = {
+    id: clips.length,
+    name: assetName,
+    start: dropTime,
+    duration: 40,
+    color: getRandomColor(),
+    trackId: newTrackId // <-- Crucial: usar a variável, não tracks.length
+  };
+
+  setClips(prevClips => {
+    const filtered = deleteClipId !== null 
+      ? prevClips.filter(c => c.id !== deleteClipId) 
+      : prevClips;
+    return [...filtered, newClip];
+  });
+
+  setDeleteClipId(null);
+  showNotify("New track created", "success");
+  
+};
+
+//create new timelines dropping assets close of a track
+const handleDropOnEmptyArea = (e: React.DragEvent) => {
+  e.preventDefault();
+  e.stopPropagation();
+
+  if (e.dataTransfer.files.length > 0) return;
+
+  const assetName = e.dataTransfer.getData("assetName");
+  if (!assetName) return;
+
+  const container = e.currentTarget.getBoundingClientRect();
+  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+  
+  const relativeY = e.clientY - container.top;
+  const x = e.clientX - container.left + scrollLeft;
+  const dropTime = Math.max(0, x / PIXELS_PER_SECOND);
+
+  const TRACK_HEIGHT = 80;
+  const totalTracksHeight = tracks.length * TRACK_HEIGHT;
+  const margin = 20;
+
+  // Se soltar acima ou abaixo, a função centralizada resolve
+  if (relativeY < -margin) {
+    createClipOnNewTrack(assetName, dropTime, true);
+  } else if (relativeY > totalTracksHeight + margin) {
+    createClipOnNewTrack(assetName, dropTime, false);
+  }
+};
+
   // Function to lead with Drag direct from OS
- const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number) => {
+
+const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number) => {
   if (!currentProjectPath) return;
 
   const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
   if (!timelineBounds) return;
 
-  const margin = 120;
-  const isInsideTimeline = 
-    mouseY >= (timelineBounds.top - margin) &&
-    mouseY <= (timelineBounds.bottom + margin) &&
-    mouseX >= (timelineBounds.left - margin) &&
-    mouseX <= (timelineBounds.right + margin);
+  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+  const relativeX = mouseX - timelineBounds.left + scrollLeft;
+  const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND);
+  const relativeY = mouseY - timelineBounds.top;
 
-  ///console.log("Is Inside Timeline?", isInsideTimeline);
+  const TRACK_HEIGHT = 80;
+  const margin = 20;
 
   for (const path of paths) {
     try {
-      // 1. Importação obrigatória para o backend (Assets)
+      // 1. Importa o arquivo via Rust (Tauri)
       await invoke('import_asset', { projectPath: currentProjectPath, filePath: path });
       const fileName = path.split(/[\\/]/).pop() || "Asset";
 
-      // 2. Se estiver na zona da timeline, injetamos direto no estado de clips
-      if (isInsideTimeline) {
-        const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-        const relativeX = mouseX - timelineBounds.left + scrollLeft;
-        const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND);
+      // 2. Determina se o drop foi em uma track existente ou fora delas
+      const totalHeight = tracks.length * TRACK_HEIGHT;
 
-        const TRACK_HEIGHT = 80;
-        const relativeY = mouseY - timelineBounds.top;
-        const targetTrack = Math.floor(relativeY / TRACK_HEIGHT);
-        const finalTrackId = Math.max(0, targetTrack);
-
-
-        // --- ADD CLIP ---
-
+      if (relativeY < 0 || relativeY > totalHeight) {
+        // CASO A: Drop fora das tracks (acima da primeira ou abaixo da última)
+        // Usamos a função unificada que cria a track e o clip juntos
+        createClipOnNewTrack(fileName, dropTime, relativeY < 0);
+      } else {
+        // CASO B: Drop dentro da área de tracks existentes
+        const targetTrackIndex = Math.floor(relativeY / TRACK_HEIGHT);
+        const targetTrackId = tracks[targetTrackIndex];
+      
         //Wait 1 milisecond to avoid the id repeat
-        await new Promise(resolve => setTimeout(resolve, 1));
-        setClips(prev => [...prev, {
+        new Promise(resolve => setTimeout(resolve, 1));
+
+        // Criamos o clip na track existente
+        const newClip: Clip = {
           id: Date.now(),
           name: fileName,
           start: dropTime,
-          duration: 10,
+          duration: 10, // Duração menor para drops nativos (comum em editores)
           color: getRandomColor(),
-          trackId: finalTrackId
-        }]);
+          trackId: targetTrackId
+        };
+
+        setClips(prev => [...prev, newClip]);
       }
     } catch (err) {
       console.error("Native Import Error:", err);
+      showNotify("Failed to import file", "error");
     }
   }
-  loadAssets(); // Atualiza a lista lateral
+  
+  // Atualiza a lista de assets lateral
+  loadAssets();
 };
-
 
 
   useEffect(() => {
@@ -484,7 +619,6 @@ const openProject = async (path: string) => {
 
   };
 
-
 const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   e.preventDefault();
   e.stopPropagation();
@@ -565,6 +699,12 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     setDeleteClipId(null);
   }
 };
+
+
+
+
+
+
   const handleImportFile = async () => {
     const selected = await open({
       multiple: true,
@@ -744,6 +884,8 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
 
             <div 
               ref={timelineContainerRef}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={handleDropOnEmptyArea}
               className="flex-1 overflow-x-auto relative bg-[#080808] scrollbar-thin scrollbar-thumb-zinc-800"
             >
               <div className="h-7 border-b border-zinc-900 sticky top-0 bg-[#080808]/80 backdrop-blur-md z-30 cursor-crosshair" onClick={handleRulerClick}>
