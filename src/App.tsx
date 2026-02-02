@@ -62,9 +62,6 @@ export default function App() {
   const timelineContainerRef = useRef<HTMLDivElement>(null);
 
 
-  //div to resize clip in timeline
-  const moveleft = useRef<HTMLDivElement>(null);
-  const moveright = useRef<HTMLDivElement>(null);
 
 
 
@@ -88,14 +85,8 @@ export default function App() {
   const [selectedAsset, setSelectedAsset] = useState<string | null>(null);
 
 
-  //States to navagate between main.project versions
-  const [projectCopyName, setProjectCopyName] = useState<string|null>(null);
-  const [projectsMains, setProjectsMains] = useState<string[]>([]);
-  const [historyChanged, setHistoryChanged] = useState(false);
 
 
-  //variavle to help detected any file add by function saveProject
-  const [changed, setChanged] = useState<boolean>(false)
 
   // Code to make the clip resizable 
   const handleResize = (id: number, deltaX: number, side: 'left' | 'right') => {
@@ -145,18 +136,6 @@ export default function App() {
     document.addEventListener('mouseup', onMouseUp);
   };
 
-  //all time copyname change will be reloadproject
-  useEffect(() => { 
-
-    console.log('mudou1', currentProjectPath, isSetupOpen, projectCopyName)
-    
-    if (currentProjectPath && !isSetupOpen)
-    {  
-      console.log('mudou')
-      openProject(currentProjectPath.toString(), projectCopyName) 
-    } 
-    
-  }, [projectCopyName])
 
 
 
@@ -174,7 +153,6 @@ export default function App() {
 
       
 
-      console.log("saveproject copyname", projectCopyName)
      
 
      const projectData: ProjectFileData = {
@@ -184,12 +162,7 @@ export default function App() {
         lastModified: Date.now()
       };
 
-      //only set copyOf if the user use the Ctrl+Z or Y
-      if (projectCopyName && historyChanged) {
-        projectData.copyOf = projectCopyName;
-        setHistoryChanged(false)
-        console.log('historychanged falso')
-      }
+      
 
       
 
@@ -209,39 +182,14 @@ export default function App() {
         console.error("Auto-save failed:", err);
       }
 
-        setChanged(true)
 
 
     };
 
     const timeoutId = setTimeout(saveProject, 500); // 0.5 second debounce
     return () => clearTimeout(timeoutId);
-  }, [clips, assets, projectName, isProjectLoaded, projectCopyName]);  
+  }, [clips, assets, projectName, isProjectLoaded]);  
 
-
-useEffect( ()  =>
-
-{
-
-     const detectAmountFiles = async () => 
-     {
-         if(changed)
-        {
-          const files = await invoke<string[]>('list_project_files', { 
-          projectPath: currentProjectPath 
-          });
-
-          setProjectsMains(files.sort())
-
-          setChanged(false)
-
-        }
-     }
-
-     detectAmountFiles()
-     
-    
-}, [changed])
 
 
 
@@ -297,60 +245,9 @@ useEffect( ()  =>
     //Function to navigate between .project versions
     const handleFileHistoryNavigation = (direction:number) =>
     {
-      console.log("handleFileHistoryNavigation")
-
-    //Check if we have a copyOf in present file  
-    const index = projectCopyName ? projectsMains.indexOf(projectCopyName) : -1;
-    if(index == -1) 
-    {
-
-
-      /*go to penultimate project that is projectsMains[projectsMains.length -1],
-      in this case projectsMains.length -1 is the index of penultimate, elemente
-      the actual chage of state (CopyName triggers SaveProject)
-
-
-
-
-       */
-      if (projectsMains.length -1  >= 0 && direction == -1 )
-      {  setProjectCopyName(projectsMains[projectsMains.length -1])
-        setHistoryChanged(true)
-        console.log('historychanged verdadeiro')
-
-      }
-      else
-      {
-        showNotify("There is not more file in this direction", "error");
-      }
-  
-      console.log("history", index, direction, projectCopyName, projectsMains.length)
-      return
-    }
-
-    console.log("Index not -1")
-
-    //check if the sum will be inside the total size of mains
-    if( index + direction < projectsMains.length && index + direction >= 0)
-    {
-        setProjectCopyName(projectsMains[index+direction])
-        setHistoryChanged(true)
-        console.log('historychanged verdadeiro')
-
-        console.log("going to", projectsMains[index+direction], index+direction)
-    }
-    else
-    {
-      showNotify("There is not more file in this direction", "error");
       
+
     }
-
-    console.log("history", index, direction, projectCopyName, projectsMains.length)
-    return
-
-
-
-}
 
 
 
@@ -510,78 +407,19 @@ useEffect( ()  =>
     }
   };
 
-const openProject = async (path: string, copyname: string|null=null) => {
+const openProject = async (path: string) => {
 
   console.log('path puro', path)
   localStorage.setItem("current_project_path", path);
   
-  try {
-    if(copyname)
-    {
-      const rawData = await invoke('load_specific_project', { projectPath: path, fileName: copyname });
-      var parsed = JSON.parse(rawData as string);
-
-      console.log('load_specific_project')
-    }
-    else
-    {
-      const rawData = await invoke('load_latest_project', { projectPath: path });
-      var parsed = JSON.parse(rawData as string);
+  try
+  {
       
-    }  
-
-     const files = await invoke<string[]>('list_project_files', { 
-      projectPath: path 
-    });
-
-    console.log("Main when it is open", files.length)
-    setProjectsMains(files)
-
-
-
-    //if the project refers to another
-    if(parsed.copyOf)
-    {
-     console.log('copyOf detected: ', parsed.copyOf) 
-
-     var  rawJson = await invoke<string>('read_specific_file', { 
-      projectPath: currentProjectPath, 
-      fileName: parsed.copyOf 
-      });
-
-      // 2. Parse into our Interface
-      var  parsedData: ProjectFileData = JSON.parse(rawJson);
-
-      //while refer to another file
-      /*while(parsedData.copyOf)
-      {
-          rawJson = await invoke<string>('read_specific_file', { 
-          projectPath: currentProjectPath, 
-            fileName: parsedData.copyOf 
-          });
-
-          // 2. Parse into our Interface
-          parsedData = JSON.parse(rawJson);
-      }
-          */
-
-      parsed = parsedData
-      setProjectCopyName(parsed.copyOf)
-
-
-      console.log('copy name', projectCopyName)
-      console.log('mains', projectsMains)
-
-
-
-
-
-    }
     
-    
-    
+    const rawData = await invoke('load_latest_project', { projectPath: path });
+    var parsed = JSON.parse(rawData as string);
     setProjectName(parsed.projectName)
-    
+
 
 
     // Update states first
@@ -604,9 +442,6 @@ const openProject = async (path: string, copyname: string|null=null) => {
     console.log("No previous project file found, starting fresh.");
     setIsProjectLoaded(true); // Allow saving for new projects too
     setIsSetupOpen(false);
-    setProjectCopyName(null)
-    setProjectsMains([])
-
   }
 };
 
@@ -946,8 +781,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
                         <div 
                           className="absolute left-0 inset-y-0 w-2 cursor-ew-resize bg-black/20 hover:bg-white/40 z-20"
                           onClick={()=> {console.log('left active')}}
-                          ref={moveright}
-
+                         
                           onMouseDown={(e) => startResizing(e, clip.id, 'left')}
 
                           
@@ -956,7 +790,9 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
 
                         <div 
                            className="absolute right-0 inset-y-0 w-2 cursor-ew-resize bg-black/20 hover:bg-white/40 z-20"
-                           ref={moveleft}
+                         
+                          onMouseDown={(e) => startResizing(e, clip.id, 'right')}
+
                         />
 
                       </motion.div>
