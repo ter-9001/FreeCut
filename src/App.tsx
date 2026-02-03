@@ -125,26 +125,7 @@ export default function App() {
 
 
 
-  // Optimized to handle both existing clips and new drops in a new track
-  const getPositionBoundaries = (trackId: number, dropTime: number, excludeId: number | null) => {
-    // Filter clips on the same track, excluding the one being moved
-    const trackClips = clips
-      .filter(c => c.trackId === trackId && c.id !== excludeId)
-      .sort((a, b) => a.start - b.start);
-
-    // Find the clip before the drop point
-    const previousClip = [...trackClips]
-      .reverse()
-      .find(c => c.start <= dropTime);
-
-    // Find the clip after the drop point
-    const nextClip = trackClips.find(c => c.start > dropTime);
-
-    const minStart = previousClip ? (previousClip.start + previousClip.duration) : 0;
-    const maxEndTimestamp = nextClip ? nextClip.start : 7200; // 2h limit
-
-    return { minStart, maxEndTimestamp };
-  };
+ 
 
 
 
@@ -432,66 +413,88 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   // Function to lead with Drag direct from OS
 
   const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number) => {
-    if (!currentProjectPath) return;
+  if (!currentProjectPath) return;
 
-    const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
-    
-    // SE O DROP FOR FORA DA TIMELINE (ex: na barra lateral ou no botão Import)
-    // Apenas importamos os arquivos como assets e não criamos clips/tracks.
-    const isOutsideTimeline = !timelineBounds || 
-      mouseX < timelineBounds.left || 
-      mouseX > timelineBounds.right || 
-      mouseY < timelineBounds.top || 
-      mouseY > timelineBounds.bottom;
+  const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
+  
+  // 1. Verificação: O drop foi fora da área de tracks?
+  const isOutsideTimeline = !timelineBounds || 
+    mouseX < timelineBounds.left || 
+    mouseX > timelineBounds.right || 
+    mouseY < timelineBounds.top || 
+    mouseY > timelineBounds.bottom;
 
-    if (isOutsideTimeline) {
-      for (const path of paths) {
-        try {
-          await invoke('import_asset', { projectPath: currentProjectPath, filePath: path });
-        } catch (err) {
-          console.error("Import error:", err);
-        }
-      }
-      loadAssets(); // Atualiza a lista lateral
-      showNotify("Assets imported", "success");
-      return; // ENCERRA AQUI, não cria tracks nem clips
-    }
-
-    // --- SE CAIU NA TIMELINE, CONTINUA A LÓGICA ANTERIOR ---
-    const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-    const relativeX = mouseX - timelineBounds.left + scrollLeft;
-    const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND);
-    const relativeY = mouseY - timelineBounds.top;
-
-    const TRACK_HEIGHT = 80;
-
+  if (isOutsideTimeline) {
     for (const path of paths) {
       try {
         await invoke('import_asset', { projectPath: currentProjectPath, filePath: path });
-        const fileName = path.split(/[\\/]/).pop() || "Asset";
-        const totalHeight = tracks.length * TRACK_HEIGHT;
-
-        if (relativeY < 0 || relativeY > totalHeight) {
-          createClipOnNewTrack(fileName, dropTime, relativeY < 0);
-        } else {
-          const targetTrackIndex = Math.floor(relativeY / TRACK_HEIGHT);
-          const targetTrackId = tracks[targetTrackIndex];
-          
-          setClips(prev => [...prev, {
-            id: Date.now() + Math.random(),
-            name: fileName,
-            start: dropTime,
-            duration: 10,
-            color: getRandomColor(),
-            trackId: targetTrackId
-          }]);
-        }
       } catch (err) {
-        console.error(err);
+        console.error("Import error:", err);
       }
     }
     loadAssets();
-  };
+    showNotify("Assets imported", "success");
+    return;
+  }
+
+  // 2. Cálculos de posição na Timeline
+  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+  const relativeX = mouseX - timelineBounds.left + scrollLeft;
+  const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND);
+  const relativeY = mouseY - timelineBounds.top;
+
+  const TRACK_HEIGHT = 80;
+  const defaultDuration = 10; // Duração padrão para arquivos externos
+
+  for (const path of paths) {
+    try {
+      // Importa para o backend
+      await invoke('import_asset', { projectPath: currentProjectPath, filePath: path });
+      const fileName = path.split(/[\\/]/).pop() || "Asset";
+
+      const totalTracksHeight = tracks.length * TRACK_HEIGHT;
+
+      // 3. Lógica de destino (Nova Track ou Track Existente)
+      if (relativeY < 0 || relativeY > totalTracksHeight) {
+        // Drop nas extremidades vazias -> Sempre cria nova track
+        createClipOnNewTrack(fileName, dropTime, relativeY < 0);
+      } else {
+        // Drop sobre a área de tracks existentes
+        const targetTrackIndex = Math.floor(relativeY / TRACK_HEIGHT);
+        const targetTrackId = tracks[targetTrackIndex];
+
+        // 4. Verificação de Colisão: Se a track alvo já tem algo nesse tempo
+        const occupied = clips.some(clip => {
+          if (clip.trackId !== targetTrackId) return false;
+          const clipEnd = clip.start + clip.duration;
+          const newEnd = dropTime + defaultDuration;
+          return dropTime < clipEnd && newEnd > clip.start;
+        });
+
+        if (occupied) {
+          // Espaço ocupado? Cria uma nova track para não sobrescrever
+          createClipOnNewTrack(fileName, dropTime, false);
+        } else {
+          // Espaço livre? Adiciona o clip na track existente
+          new Promise(resolve => setTimeout(resolve, 1));
+
+          const newClip: Clip = {
+            id: Date.now() + Math.random(),
+            name: fileName,
+            start: dropTime,
+            duration: defaultDuration,
+            color: getRandomColor(),
+            trackId: targetTrackId
+          };
+          setClips(prev => [...prev, newClip]);
+        }
+      }
+    } catch (err) {
+      console.error("Native drop processing error:", err);
+    }
+  }
+  loadAssets();
+};
 
   useEffect(() => {
     const preventDefault = (e: DragEvent) => {
@@ -625,90 +628,101 @@ const openProject = async (path: string) => {
 
   };
 
+const isSpaceOccupied = (trackId: number, start: number, duration: number, excludeId: number | null = null) => {
+  const newEnd = start + duration;
+
+  return clips.some(clip => {
+    // 1. Ignora se for o próprio clip que estamos movendo
+    if (excludeId !== null && clip.id === excludeId) return false;
+    
+    // 2. Ignora se estiver em outra track
+    if (clip.trackId !== trackId) return false;
+
+    const clipEnd = clip.start + clip.duration;
+
+    // 3. Lógica de Sobreposição Matemática:
+    // Há colisão se o (Início A < Fim B) E (Fim A > Início B)
+    const collision = start < clipEnd && newEnd > clip.start;
+    
+    return collision;
+  });
+};
+
+
 const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   e.preventDefault();
   e.stopPropagation();
 
-  const assetName = e.dataTransfer.getData("assetName");
 
+
+
+  const assetName = e.dataTransfer.getData("assetName");
 
 
   const color = e.dataTransfer.getData("color");
 
   const previousTrackRaw = e.dataTransfer.getData("previousTrack");
   const previousTrack = previousTrackRaw ? Number(previousTrackRaw) : null;
-  
-  const durationRaw = e.dataTransfer.getData("duration");
-  const duration = durationRaw ? Number(durationRaw) : null;
-  
 
 
-  if (assetName) {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-    const x = e.clientX - rect.left + scrollLeft;
-    
+  if (!assetName) return;
 
-    
-    // Convert drop X position to timeline seconds
-    const dropTime = x / PIXELS_PER_SECOND;
-    const MAX_DEFAULT_DURATION = duration ? duration : 40; //  default duration set to 40s
+  const rect = e.currentTarget.getBoundingClientRect();
+  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+  const dropTime = (e.clientX - rect.left + scrollLeft) / PIXELS_PER_SECOND;
 
-    // 1. Find the nearest clip on the SAME track that starts AFTER our drop point
+  // 1. O mouse caiu EXATAMENTE em cima de algum clip existente?
+  const clipUnderMouse = clips.find(c => 
+    c.trackId === trackId && 
+    c.id !== deleteClipId && 
+    dropTime >= c.start && 
+    dropTime <= (c.start + c.duration)
+  );
 
-    //1.1 If the nextClip it is the own clip the duration will be until another , WE USE THE deleteClipId TO CHECK THIS
-    const nextClip = clips
-      .filter(c => c.trackId === trackId && c.start > dropTime && c.id != deleteClipId)
-      .reduce((prev, curr) => (prev === null || curr.start < prev.start ? curr : prev), null as Clip | null);
-
-
-    // 2. Calculate dynamic duration
-    // If there is a clip ahead, duration is the gap between drop and next clip (clamped at 40s)
-    // If no clip ahead, default to 40s
-    let finalDuration = MAX_DEFAULT_DURATION;
-    if (nextClip) {
-      const timeUntilNextClip = nextClip.start - dropTime;
-      finalDuration = Math.min(MAX_DEFAULT_DURATION, timeUntilNextClip);
-    }
-
-    // 3. Prevent overlap if dropping exactly on top of an existing clip's start
-    if (finalDuration <= 0) {
-      showNotify("No space available here", "error");
-      return;
-    }
-
-
-    // 4. Create the new clip with the calculated duration
-
-    //Wait 1 milisecond to avoid the id repeat
-    new Promise(resolve => setTimeout(resolve, 1));
-    const newClip: Clip = {
-      id: Date.now(),
-      name: assetName,
-      start: dropTime,
-      duration: finalDuration,
-      color:  previousTrack != trackId ?  getRandomColor() : color, //change the color only when change the track
-      trackId: trackId
-    };
-
-
-    // 5. Update state: Add new clip and remove the old one if it was a move operation
-    setClips(prevClips => {
-      let filtered = prevClips;
-      if (deleteClipId !== null) {
-        filtered = prevClips.filter(clip => clip.id !== deleteClipId);
-      }
-      return [...filtered, newClip];
-    });
-
-    // Reset move state
-    setDeleteClipId(null);
+  // 2. Se caiu em cima de alguém, aí sim criamos nova track
+  if (clipUnderMouse) {
+    createClipOnNewTrack(assetName, dropTime, false);
+    return;
   }
+
+  // 3. Se caiu no vazio, vamos ver quanto espaço temos até o PRÓXIMO clip
+  const nextClip = clips
+    .filter(c => c.trackId === trackId && c.start > dropTime && c.id !== deleteClipId)
+    .reduce((prev, curr) => (prev === null || curr.start < prev.start ? curr : prev), null as Clip | null);
+
+  const durationRaw = e.dataTransfer.getData("duration");
+  const preferredDuration = durationRaw && Number(durationRaw) > 0 ? Number(durationRaw) : 40;
+  
+  // LÓGICA DE ENCAIXE:
+  // Se houver um clip na frente, a duração será o menor valor entre o preferido e o buraco disponível
+  let finalDuration = preferredDuration;
+  if (nextClip) {
+    const gap = nextClip.start - dropTime;
+    finalDuration = Math.min(preferredDuration, gap);
+  }
+
+  // 4. Segurança: Se por erro de cálculo o gap for minúsculo, criamos nova track
+  if (finalDuration < 0.2) {
+    createClipOnNewTrack(assetName, dropTime, false);
+    return;
+  }
+
+  const newClip: Clip = {
+    id: Date.now() + Math.random(),
+    name: assetName,
+    start: dropTime,
+    duration: finalDuration,
+    color: previousTrack != trackId ?  getRandomColor() : color, //change the color only when change the track
+    trackId: trackId
+  };
+
+  setClips(prev => {
+    const filtered = deleteClipId !== null ? prev.filter(c => c.id !== deleteClipId) : prev;
+    return [...filtered, newClip];
+  });
+
+  setDeleteClipId(null);
 };
-
-
-
-
 
 
   const handleImportFile = async () => {
