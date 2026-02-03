@@ -1,3 +1,21 @@
+/*
+ * Copyright (C) 2026  Gabriel Martins Nunes
+ * * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+
+
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -290,6 +308,11 @@ export default function App() {
           setIsSnapEnabled(prev => !prev);
           showNotify(`Magnetic Snap: ${!isSnapEnabled ? 'ON' : 'OFF'}`, "success");
         }
+
+        if (e.key.toLowerCase() === 's') {
+          e.preventDefault();
+          handleSplit();
+        }
       
 
 
@@ -302,6 +325,110 @@ export default function App() {
     }, [selectedClipId, clips, isSnapEnabled]);
 
 
+    /**
+     * Moves the playhead to a specific X position and updates the state
+     * @param clientX Raw mouse X coordinate
+     */
+    const seekTo = (clientX: number) => {
+      if (!timelineContainerRef.current) return;
+      
+      const rect = timelineContainerRef.current.getBoundingClientRect();
+      const scrollLeft = timelineContainerRef.current.scrollLeft;
+      
+      // Calculate X relative to the timeline content
+      const newX = clientX - rect.left + scrollLeft;
+      
+      // Ensure the playhead doesn't go into negative values
+      setPlayheadPos(Math.max(0, newX));
+    };
+
+    /**
+     * Handles the mouse down event on the ruler to start dragging the playhead
+     */
+    const handlePlayheadDrag = (e: React.MouseEvent) => {
+      seekTo(e.clientX);
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        seekTo(moveEvent.clientX);
+      };
+
+      const onMouseUp = () => {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      };
+
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    };
+
+    /**
+     * Splits the selected clip (or clip under playhead) into two parts
+     * based on the current playhead position.
+     */
+    /**
+     * Advanced Split Logic:
+     * 1. If a clip is selected, only split that one (even if others are below/above).
+     * 2. If NO clip is selected, but multiple clips are under the playhead, 
+     * prevent splitting and warn the user to avoid accidental cuts.
+     * 3. Only split without selection if exactly ONE clip is found under the playhead.
+     */
+  const handleSplit = () => {
+    const playheadTime = playheadPos / PIXELS_PER_SECOND;
+
+    // Find ALL clips under the playhead at this moment
+    const clipsAtPlayhead = clips.filter(c => 
+      playheadTime > c.start && 
+      playheadTime < (c.start + c.duration)
+    );
+
+    let targetClip: Clip | undefined;
+
+    // Case A: A clip is specifically selected
+    if (selectedClipId !== null) {
+      targetClip = clipsAtPlayhead.find(c => c.id === selectedClipId);
+      
+      // Safety check: if the selection is NOT under the playhead, cancel
+      if (!targetClip) {
+        showNotify("Selected clip is not under the playhead", "error");
+        return;
+      }
+    } 
+    // Case B: No selection, check how many clips are under the playhead
+    else {
+      if (clipsAtPlayhead.length > 1) {
+        showNotify("Multiple clips found! Select one to split.", "error");
+        return;
+      }
+      if (clipsAtPlayhead.length === 0) {
+        showNotify("No clip under the playhead", "error");
+        return;
+      }
+      // Only one clip found, safe to split
+      targetClip = clipsAtPlayhead[0];
+    }
+
+    // --- PERFORM THE SPLIT ---
+    const firstPartDuration = playheadTime - targetClip.start;
+    const secondPartDuration = targetClip.duration - firstPartDuration;
+
+    const firstClip = { ...targetClip, duration: firstPartDuration };
+    const secondClip = { 
+      ...targetClip, 
+      id: Date.now() + Math.random(), 
+      start: playheadTime, 
+      duration: secondPartDuration 
+    };
+
+    setClips(prev => [
+      ...prev.filter(c => c.id !== targetClip!.id),
+      firstClip,
+      secondClip
+    ]);
+
+    // Keep the new second part selected for easier editing
+    setSelectedClipId(secondClip.id);
+    showNotify("Clip split!", "success");
+  };
     //Function to snap
     // Helper to calculate the magnetic snap point
       /**
@@ -790,8 +917,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   useEffect(() => { if (!isSetupOpen && currentProjectPath) loadAssets(); }, [isSetupOpen]);
 
   // --- RENDER ---
-
-  return (
+return (
     <div className="flex flex-col h-screen w-screen bg-black text-zinc-300 font-sans overflow-hidden">
 
       {/* Notifications */}
@@ -812,7 +938,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
       </AnimatePresence>
 
       {isSetupOpen ? (
-        /* PROJECT MANAGER */
+        /* PROJECT MANAGER (Mantido conforme original) */
         <div className="flex flex-col h-full w-full bg-[#0a0a0a]">
           <header className="h-16 border-b border-zinc-800 flex items-center justify-between px-8 bg-[#111]">
             <div className="flex items-center gap-4">
@@ -925,11 +1051,18 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
               </div>
             </section>
           </main>
+
           <footer className="h-80 bg-[#0c0c0c] border-t border-zinc-800 flex flex-col z-20">
+            {/* Toolbar */}
             <div className="h-10 border-b border-zinc-900 flex items-center px-4 justify-between bg-[#0e0e0e]">
               <div className="flex items-center gap-6">
-                <button className="flex items-center gap-2 text-[10px] font-black text-zinc-500 hover:text-red-500 uppercase"><Scissors size={14}/> Split</button>
-                {/* MAGNETIC SNAP BUTTON */}
+                <button 
+                  onClick={handleSplit} 
+                  className="flex items-center gap-2 text-[10px] font-black text-zinc-500 hover:text-red-500 uppercase transition-colors"
+                >
+                  <Scissors size={14}/> Split (S)
+                </button>
+                
                 <button 
                   onClick={() => {
                     const newState = !isSnapEnabled;
@@ -943,81 +1076,101 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
                   <LayoutGrid size={14} className={isSnapEnabled ? "animate-pulse" : ""} />
                   Snap {isSnapEnabled ? 'On' : 'Off'}
                 </button>
-                <div className="text-[10px] font-mono text-zinc-400">POS: <span className="text-white">{(playheadPos / PIXELS_PER_SECOND).toFixed(2)}s</span></div>
+
+                <div className="text-[10px] font-mono text-zinc-400">
+                  POS: <span className="text-white">{(playheadPos / PIXELS_PER_SECOND).toFixed(2)}s</span>
+                </div>
               </div>
             </div>
 
+            {/* Timeline Viewport */}
             <div 
               ref={timelineContainerRef}
               onDragOver={(e) => e.preventDefault()}
               onDrop={handleDropOnEmptyArea}
+              onMouseDown={(e) => {
+                // Seek if clicking empty space in the timeline area
+                if (e.target === e.currentTarget) seekTo(e.clientX);
+              }}
               className="flex-1 overflow-x-auto relative bg-[#080808] scrollbar-thin scrollbar-thumb-zinc-800"
             >
-              <div className="h-7 border-b border-zinc-900 sticky top-0 bg-[#080808]/80 backdrop-blur-md z-30 cursor-crosshair" onClick={handleRulerClick}>
-                {[...Array(60)].map((_, i) => (
-                  <div key={i} className="absolute border-l border-zinc-800 h-full text-[8px] pl-2 pt-1.5 text-zinc-700 font-mono" style={{left: i * 20 * PIXELS_PER_SECOND}}>{i * 20}s</div>
+              {/* Ruler */}
+              <div 
+                className="h-7 border-b border-zinc-900 sticky top-0 bg-[#080808]/90 backdrop-blur-md z-50 cursor-crosshair select-none"
+                onMouseDown={handlePlayheadDrag}
+              >
+                {[...Array(100)].map((_, i) => (
+                  <div 
+                    key={i} 
+                    className="absolute border-l border-zinc-800 h-full text-[8px] pl-1.5 pt-1 text-zinc-600 font-mono" 
+                    style={{left: i * 10 * PIXELS_PER_SECOND}}
+                  >
+                    {i * 10}s
+                  </div>
                 ))}
               </div>
 
-              <div className="p-4 min-w-[6000px] relative h-full flex flex-col gap-1">
-                <div className="absolute top-0 bottom-0 w-[1px] bg-red-600 z-40 pointer-events-none" style={{left: playheadPos + 16}}>
-                  <div className="w-2.5 h-2.5 bg-red-600 rounded-full -ml-[4.5px] -mt-0.5 shadow-lg" />
+              {/* Content Area */}
+              <div className="p-4 min-w-[10000px] relative h-full flex flex-col gap-1">
+                
+                {/* Playhead Line */}
+                <div 
+                  className="absolute top-0 bottom-0 w-[2px] bg-red-600 z-40 pointer-events-none" 
+                  style={{ left: playheadPos + 16 }} // +16 for padding
+                >
+                  <div className="w-3 h-3 bg-red-600 rounded-full -ml-[5.5px] -mt-1 shadow-[0_0_10px_rgba(220,38,38,0.5)]" />
                 </div>
 
+                {/* Tracks Rendering */}
                 {tracks.map((trackId) => (
                   <div 
                     key={trackId}
                     onDragOver={handleDragOver}
                     onDrop={(e) => handleDropOnTimeline(e, trackId)}
-                    
-
-                    className="h-20 bg-zinc-900/20 border border-zinc-800/50 rounded-lg relative overflow-hidden group hover:border-zinc-700 transition-colors"
+                    className="h-20 bg-zinc-900/10 border border-zinc-800/30 rounded-lg relative group hover:bg-zinc-900/20 transition-colors"
                   >
-                    <div className="absolute left-2 top-1 text-[8px] font-black text-zinc-700 uppercase tracking-widest pointer-events-none">
+                    <div className="absolute left-2 top-1 text-[8px] font-black text-zinc-800 uppercase tracking-widest pointer-events-none">
                       Track {trackId + 1}
                     </div>
 
                     {clips.filter(c => c.trackId === trackId).map((clip) => (
                       <motion.div 
                         key={clip.id}
-                        draggable = "true"
-                        onDragStart={(e) => handleDragStart(e, clip.color, trackId, clip.duration ,clip.name, true , clip.id)}
-                        onClick={() => setSelectedClipId(clip.id)}
-                        className={`absolute inset-y-2 ${clip.color} rounded-lg flex items-center shadow-xl group z-10 
-                        ${selectedClipId === clip.id ? 'ring-2 ring-white' : ''}`}
-                        style={{ width: clip.duration * PIXELS_PER_SECOND, left: clip.start * PIXELS_PER_SECOND }}
+                        draggable="true"
+                        onDragStart={(e) => handleDragStart(e, clip.color, trackId, clip.duration, clip.name, true, clip.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedClipId(clip.id);
+                        }}
+                        className={`absolute inset-y-2 ${clip.color} rounded-lg flex items-center px-3 shadow-xl group z-10 select-none
+                        ${selectedClipId === clip.id ? 'ring-2 ring-white scale-[1.01]' : 'hover:brightness-110'}`}
+                        style={{ 
+                          width: clip.duration * PIXELS_PER_SECOND, 
+                          left: clip.start * PIXELS_PER_SECOND 
+                        }}
                       >
-
-
-                        {/* Left Resize Handle */}
+                        {/* Resize Handles */}
                         <div 
-                          className="absolute left-0 inset-y-0 w-2 cursor-ew-resize bg-black/20 hover:bg-white/40 z-20"
-                          onClick={()=> {console.log('left active')}}
-                         
+                          className="absolute left-0 inset-y-0 w-2 cursor-ew-resize bg-black/10 hover:bg-white/30 rounded-l-lg transition-colors"
                           onMouseDown={(e) => startResizing(e, clip.id, 'left')}
-
-                          
                         />
-                        <span className="text-[10px] font-black text-white truncate uppercase italic" >{clip.name}</span>
+                        
+                        <span className="text-[10px] font-black text-white truncate uppercase italic pointer-events-none">
+                          {clip.name}
+                        </span>
 
                         <div 
-                           className="absolute right-0 inset-y-0 w-2 cursor-ew-resize bg-black/20 hover:bg-white/40 z-20"
-                         
+                          className="absolute right-0 inset-y-0 w-2 cursor-ew-resize bg-black/10 hover:bg-white/30 rounded-r-lg transition-colors"
                           onMouseDown={(e) => startResizing(e, clip.id, 'right')}
-
                         />
-
                       </motion.div>
                     ))}
-
-
-                    
                   </div>
                 ))}
 
                 <button 
-                  onClick={() => setTracks(prev => [...prev, prev.length])}
-                  className="mt-2 flex items-center gap-2 text-[9px] font-black text-zinc-700 hover:text-zinc-500 uppercase tracking-widest transition-colors"
+                  onClick={() => setTracks(prev => [...prev, Math.max(...prev, -1) + 1])}
+                  className="mt-4 w-fit flex items-center gap-2 text-[9px] font-black text-zinc-700 hover:text-zinc-400 uppercase tracking-widest transition-colors px-2 py-1"
                 >
                   <Plus size={12} /> Add Track
                 </button>
@@ -1027,10 +1180,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
         </div>
       )}
 
-
-      
-
-      {/* New Project Modal */}
+      {/* Modals e Confirmações (Mantidos conforme original) */}
       <AnimatePresence>
         {isCreatingNew && (
           <div className="fixed inset-0 bg-black/95 z-[300] flex items-center justify-center p-4">
@@ -1047,7 +1197,6 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
         )}
       </AnimatePresence>
 
-      {/* YouTube Import Modal */}
       <AnimatePresence>
         {isImportModalOpen && (
           <div className="fixed inset-0 bg-black/90 z-[400] flex items-center justify-center p-4">
@@ -1064,7 +1213,6 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
         )}
       </AnimatePresence>
 
-      {/* DELETE CONFIRMATION MODAL */}
       <AnimatePresence>
         {projectToDelete && (
           <div className="fixed inset-0 bg-black/90 z-[400] flex items-center justify-center p-4 backdrop-blur-md">
@@ -1080,21 +1228,10 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
               <h2 className="text-xl font-black text-white mb-2 uppercase italic tracking-tighter">Are you sure?</h2>
               <p className="text-zinc-500 text-xs mb-8">
                 You are about to delete <span className="text-white font-bold">{projectToDelete.name}</span>. 
-                This action cannot be undone.
               </p>
               <div className="flex gap-3">
-                <button 
-                  onClick={() => setProjectToDelete(null)}
-                  className="flex-1 py-3 text-[10px] font-black text-zinc-500 hover:text-white uppercase tracking-widest"
-                >
-                  Cancel
-                </button>
-                <button 
-                  onClick={handleDeleteProject}
-                  className="flex-1 bg-red-600 hover:bg-red-700 py-3 rounded-xl font-black text-xs text-white uppercase shadow-lg shadow-red-900/20"
-                >
-                  Delete Project
-                </button>
+                <button onClick={() => setProjectToDelete(null)} className="flex-1 py-3 text-[10px] font-black text-zinc-500 hover:text-white uppercase tracking-widest">Cancel</button>
+                <button onClick={handleDeleteProject} className="flex-1 bg-red-600 hover:bg-red-700 py-3 rounded-xl font-black text-xs text-white uppercase shadow-lg shadow-red-900/20">Delete Project</button>
               </div>
             </motion.div>
           </div>
