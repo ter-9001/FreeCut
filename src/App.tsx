@@ -33,7 +33,10 @@ import {
   X,
   Youtube,
   Share2,
-  Import
+  Import,
+  ZoomIn,      // Substituindo SearchPlus
+  ZoomOut
+  
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -110,8 +113,9 @@ export default function App() {
   // Helper to get a random color
   const getRandomColor = () => CLIP_COLORS[Math.floor(Math.random() * CLIP_COLORS.length)];
 
-  const [selectedClipId, setSelectedClipId] = useState<number | null>(null);
-  const [selectedAsset, setSelectedAsset] = useState<string | null>(null);
+  // Change from null to empty arrays
+  const [selectedClipIds, setSelectedClipIds] = useState<number[]>([]);
+  const [selectedAssets, setSelectedAssets] = useState<string[]>([]);
 
 
 
@@ -136,6 +140,60 @@ export default function App() {
   const isUndoRedoAction = useRef(false);
 
   const MAX_HISTORY_STEPS = 100;
+
+
+  // Default zoom: 100 pixels represents 1 second
+  const [pixelsPerSecond, setPixelsPerSecond] = useState(100);
+
+  // Limits to prevent the timeline from disappearing or becoming infinite
+  const MIN_ZOOM = 100;
+  const MAX_ZOOM = 1000;
+
+
+    /**
+   * Adjusts the timeline scale.
+   * @param factor - Positive to zoom in, negative to zoom out
+   */
+  const handleZoom = (factor: number) => {
+    setPixelsPerSecond(prev => {
+      const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev + factor));
+      return newZoom;
+    });
+  };
+
+
+  //logic to zoom with scroll
+    useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      // Only zoom if Alt key is pressed
+      if (e.altKey) {
+        e.preventDefault();
+        const zoomAmount = e.deltaY > 0 ? -20 : 20;
+        handleZoom(zoomAmount);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Zoom in with Ctrl + "+" or just "+"
+      if ((e.ctrlKey || e.metaKey) && e.key === '=') {
+        e.preventDefault();
+        handleZoom(50);
+      }
+      // Zoom out with Ctrl + "-" or just "-"
+      if ((e.ctrlKey || e.metaKey) && e.key === '-') {
+        e.preventDefault();
+        handleZoom(-50);
+      }
+    };
+
+    window.addEventListener('wheel', handleWheel, { passive: false });
+    window.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      window.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   /**
    * Manually pushes a snapshot to history.
@@ -432,24 +490,70 @@ export default function App() {
     return `${parts.join(':')}.${ms.toString().padStart(2, '0')}`;
   };
 
+  //allow multiples selections with shift and ctrl
+  const toggleAssetSelection = (assetName: string, isShift: boolean) => {
+    setSelectedClipIds([]); // Clear clips when selecting assets
+    setSelectedAssets(prev => {
+      if (isShift) {
+        return prev.includes(assetName) 
+          ? prev.filter(a => a !== assetName) 
+          : [...prev, assetName];
+      }
+      return [assetName];
+    });
+  };
+
+  /**
+ * Manages multiple clip selection.
+ * If shiftKey is pressed, it toggles the clip in the current selection.
+ * Otherwise, it selects only the clicked clip.
+ */
+  const toggleClipSelection = (clipId: number, isMultiSelect: boolean) => {
+    // Clear asset selection when interacting with clips
+    setSelectedAssets([]);
+
+    setSelectedClipIds(prev => {
+      // If Shift/Ctrl is held, add/remove from existing list
+      if (isMultiSelect) {
+        return prev.includes(clipId) 
+          ? prev.filter(id => id !== clipId) 
+          : [...prev, clipId];
+      }
+      // Otherwise, select ONLY this clip
+      return [clipId];
+    });
+  };
+
+  //delete several clips or assets in one time
+  const handleDeleteEverything = () => {
+    // 1. Check if there's anything to delete
+    if (selectedClipIds.length === 0 && selectedAssets.length === 0) return;
+
+    // 2. Save snapshot for the 100-step history
+    saveHistory(clips, assets);
+
+    // 3. Delete selected CLIPS
+    if (selectedClipIds.length > 0) {
+      setClips(prev => prev.filter(c => !selectedClipIds.includes(c.id)));
+      setSelectedClipIds([]);
+    }
+
+    // 4. Delete selected ASSETS and all their timeline instances
+    if (selectedAssets.length > 0) {
+      setAssets(prev => prev.filter(a => !selectedAssets.includes(a)));
+      setClips(prev => prev.filter(c => !selectedAssets.includes(c.name)));
+      setSelectedAssets([]);
+    }
+
+    showNotify("Selection purged", "success");
+  };
 
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Delete') {
-          // Scenario A: Deleting a specific clip from timeline
-          if (selectedClipId !== null) {
-            setClips(prev => prev.filter(c => c.id !== selectedClipId));
-            setSelectedClipId(null);
-            showNotify("Clip removed", "success");
-          } 
-          // Scenario B: Deleting an Asset and ALL its clips (your logic)
-          else if (selectedAsset !== null) {
-            setAssets(prev => prev.filter(asset => asset !== selectedAsset));
-            setClips(prev => prev.filter(c => c.name !== selectedAsset));
-            setSelectedAsset(null);
-            showNotify("Asset and associated clips removed", "success");
-          }
-        }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        handleDeleteEverything();
+    
+      }
 
 
         // Undo: Ctrl+Z or Cmd+Z
@@ -492,7 +596,7 @@ export default function App() {
       };
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedClipId, clips, isSnapEnabled, assets, history, redoStack]);
+    }, [selectedClipIds, selectedAssets , clips, isSnapEnabled, assets, history, redoStack]);
 
 
     /**
@@ -1202,9 +1306,11 @@ return (
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: 1, x: 0 }}
                     key={index}
-                    onClick={() => setSelectedAsset(asset)}
-                    className={`bg-[#151515] border border-zinc-800 p-2 rounded-lg flex items-center gap-3 group hover:border-zinc-600 transition-all cursor-grab active:cursor-grabbing
-                    ${selectedAsset === asset ? 'ring-2 ring-white' : ''}`}
+                   onClick={(e) => toggleAssetSelection(asset, e.shiftKey || e.ctrlKey)}
+                    
+                    className={`bg-[#151515] border border-zinc-800 p-2 rounded-lg flex items-center gap-3 group hover:border-zinc-600 transition-all cursor-grab active:cursor-grabbing ${
+                      selectedAssets.includes(asset) ? 'bg-red-500/20 border-red-500' : 'border-zinc-800'
+                    }`}
                     draggable="true"
                     onDragStart={(e) => handleDragStart(e, null, null, null, asset, false, null)}
                   >
@@ -1272,6 +1378,22 @@ return (
                   Snap {isSnapEnabled ? 'On' : 'Off'}
                 </button>
 
+                <div className="flex items-center gap-3 bg-zinc-900 px-4 py-2 rounded-lg border border-zinc-800">
+                  <ZoomOut size={16} className="text-zinc-500" />
+                  <input 
+                    type="range"
+                    min={MIN_ZOOM}
+                    max={MAX_ZOOM}
+                    value={pixelsPerSecond}
+                    onChange={(e) => setPixelsPerSecond(Number(e.target.value))}
+                    className="w-32 h-1 bg-zinc-300 rounded-lg appearance-none cursor-pointer accent-white"
+                  />
+                  <ZoomIn size={16} className="text-zinc-500" />
+                  <span className="text-[10px] font-mono text-zinc-500 w-10">
+                    {Math.round((pixelsPerSecond / 100) * 100)}%
+                  </span>
+                </div>
+
                 <div className="text-[10px] font-mono text-zinc-400 flex items-center gap-2">
                   <Clock size={12} className="text-zinc-600" />
                   POS: <span className="text-white font-bold w-16">
@@ -1303,7 +1425,7 @@ return (
                       <div 
                         key={i} 
                         className="absolute border-l border-zinc-800 h-full text-[8px] pl-1.5 pt-1 text-zinc-600 font-mono" 
-                        style={{ left: timeInSeconds * PIXELS_PER_SECOND }}
+                        style={{ left: timeInSeconds * pixelsPerSecond }}
                       >
                         {formatTime(timeInSeconds)}
                       </div>
@@ -1340,14 +1462,17 @@ return (
                         draggable="true"
                         onDragStart={(e) => handleDragStart(e, clip.color, trackId, clip.duration, clip.name, true, clip.id)}
                         onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedClipId(clip.id);
+                          e.stopPropagation(); // Prevents the timeline background click from deselecting
+                          toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey || e.metaKey);
                         }}
-                        className={`absolute inset-y-2 ${clip.color} rounded-lg flex items-center px-3 shadow-xl group z-10 select-none
-                        ${selectedClipId === clip.id ? 'ring-2 ring-white scale-[1.01]' : 'hover:brightness-110'}`}
-                        style={{ 
-                          width: clip.duration * PIXELS_PER_SECOND, 
-                          left: clip.start * PIXELS_PER_SECOND 
+                        className={`absolute inset-y-2 ${clip.color} rounded-lg flex items-center shadow-xl group z-10   ${
+                          selectedClipIds.includes(clip.id) 
+                             ? 'ring-2 ring-white' : ''
+                        }`}
+                        //style={{ width: clip.duration * PIXELS_PER_SECOND, left: clip.start * PIXELS_PER_SECOND }}
+                        style={{
+                          left: clip.start * pixelsPerSecond,
+                          width: clip.duration * pixelsPerSecond,
                         }}
                       >
                         {/* Resize Handles */}
