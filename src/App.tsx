@@ -120,7 +120,7 @@ export default function App() {
 
 
   //snap function
-  const [isSnapEnabled, setIsSnapEnabled] = useState(true);
+  const [isSnapEnabled, setIsSnapEnabled] = useState(false);
 
 
   const [isPlaying, setIsPlaying] = useState(false);
@@ -136,6 +136,63 @@ export default function App() {
   const [redoStack, setRedoStack] = useState<{ clips: Clip[], assets: string[] }[]>([]);
 
 
+  const [timelineHeight, setTimelineHeight] = useState(300); // Default height
+  const isResizingTimeline = useRef(false);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizingTimeline.current) return;
+      
+      // Calculate new height from the bottom of the screen
+      const newHeight = window.innerHeight - e.clientY;
+      
+      // Limits: Min 150px, Max 80% of screen
+      if (newHeight > 150 && newHeight < window.innerHeight * 0.8) {
+        setTimelineHeight(newHeight);
+      }
+    };
+
+    const handleMouseUp = () => {
+      isResizingTimeline.current = false;
+      document.body.style.cursor = 'default';
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+
+    /**
+   * Automatically prunes empty tracks whenever the clips array changes.
+   * This keeps the timeline clean by removing tracks with no content.
+   */
+  useEffect(() => {
+    // We identify which track IDs are currently occupied by clips
+    const occupiedTrackIds = new Set(clips.map(clip => clip.trackId));
+
+    setTracks(prevTracks => {
+      // If we have 0 or 1 track, we keep it to maintain a minimal timeline UI
+      if (prevTracks.length <= 1) return prevTracks;
+
+      // Filter tracks: keep only those that have clips OR the very first track
+      const updatedTracks = prevTracks.filter(trackId => 
+        occupiedTrackIds.has(trackId) || trackId === 0
+      );
+
+      // Only update state if the number of tracks actually changed to avoid re-renders
+      if (updatedTracks.length !== prevTracks.length) {
+        return updatedTracks;
+      }
+      
+      return prevTracks;
+    });
+  }, [clips]); // Triggered every time clips are added, moved, or deleted
+
+
   // This ref prevents the useEffect from saving history during an Undo/Redo operation
   const isUndoRedoAction = useRef(false);
 
@@ -143,11 +200,11 @@ export default function App() {
 
 
   // Default zoom: 100 pixels represents 1 second
-  const [pixelsPerSecond, setPixelsPerSecond] = useState(100);
+  const [pixelsPerSecond, setPixelsPerSecond] = useState(10);
 
   // Limits to prevent the timeline from disappearing or becoming infinite
-  const MIN_ZOOM = 100;
-  const MAX_ZOOM = 1000;
+  const MIN_ZOOM = 1;
+  const MAX_ZOOM = 200;
 
 
     /**
@@ -160,6 +217,9 @@ export default function App() {
       return newZoom;
     });
   };
+
+
+
 
 
   //logic to zoom with scroll
@@ -1087,79 +1147,74 @@ const openProject = async (path: string) => {
 
   };
 
-const isSpaceOccupied = (trackId: number, start: number, duration: number, excludeId: number | null = null) => {
-  const newEnd = start + duration;
-  const TOLERANCE = 0.05; // Slightly increased for stability
+  const isSpaceOccupied = (trackId: number, start: number, duration: number, excludeId: number | null = null) => {
+    const newEnd = start + duration;
+    // Increase tolerance to 0.1s to handle sub-pixel rounding during snaps
+    const TOLERANCE = 0.1; 
 
-  return clips.some(clip => {
-    if (excludeId !== null && clip.id === excludeId) return false;
-    if (clip.trackId !== trackId) return false;
+    return clips.some(clip => {
+      // If we are moving an existing clip, ignore its old position in the check
+      if (excludeId !== null && clip.id === excludeId) return false;
+      if (clip.trackId !== trackId) return false;
 
-    const clipEnd = clip.start + clip.duration;
-    
-    // Collision only if they overlap more than the tolerance
-    return start < (clipEnd - TOLERANCE) && newEnd > (clip.start + TOLERANCE);
-  });
-};
-
-
-const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
-  e.preventDefault();
-  e.stopPropagation();
-
-  const assetName = e.dataTransfer.getData("assetName");
-
-  const color = e.dataTransfer.getData("color");
-
-  const previousTrackRaw = e.dataTransfer.getData("previousTrack");
-  const previousTrack = previousTrackRaw ? Number(previousTrackRaw) : null;
-
-
-  
-  if (!assetName) return;
-
-  const rect = e.currentTarget.getBoundingClientRect();
-  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-  
-  // 1. Calculate raw time from mouse
-  const rawDropTime = (e.clientX - rect.left + scrollLeft) / PIXELS_PER_SECOND;
-
-  // 2. Apply Snap (Strict or with Threshold)
-  const dropTime = getSnappedTime(rawDropTime, deleteClipId, trackId);
-
-  const durationRaw = e.dataTransfer.getData("duration");
-  const preferredDuration = durationRaw && Number(durationRaw) > 0 ? Number(durationRaw) : 40;
-
-  // 3. Check for REAL collision (using the tolerance logic)
-  // If the snap point causes a real overlap, we move to a new track
-  if (isSpaceOccupied(trackId, dropTime, preferredDuration, deleteClipId)) {
-    // If it truly doesn't fit even with snapping, create new track
-    createClipOnNewTrack(assetName, dropTime, false);
-    return;
-  }
-
-  // 4. If it fits (or just touches), place it on the current track
-  const newClip: Clip = {
-    id: Date.now() + Math.random(),
-    name: assetName,
-    start: dropTime,
-    duration: preferredDuration,
-    color: previousTrack != trackId ?  getRandomColor() : color, //change the color only when change the track
-    trackId: trackId
+      const clipEnd = clip.start + clip.duration;
+      
+      // Check overlap: the new clip only collides if it enters significantly into another clip
+      return start < (clipEnd - TOLERANCE) && newEnd > (clip.start + TOLERANCE);
+    });
   };
 
-  setClips(prev => {
-    const filtered = deleteClipId !== null ? prev.filter(c => c.id !== deleteClipId) : prev;
-    return [...filtered, newClip];
-  });
 
-  setDeleteClipId(null);
+  const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
+    e.preventDefault();
+    e.stopPropagation();
 
+    const assetName = e.dataTransfer.getData("assetName");
+    const color = e.dataTransfer.getData("color");
+    const previousTrackRaw = e.dataTransfer.getData("previousTrack");
+    const previousTrack = previousTrackRaw ? Number(previousTrackRaw) : null;
+    const durationRaw = e.dataTransfer.getData("duration");
+    const preferredDuration = durationRaw && Number(durationRaw) > 0 ? Number(durationRaw) : 40;
 
-  updatehistory()
-  
-};
+    if (!assetName) return;
 
+    const rect = e.currentTarget.getBoundingClientRect();
+    const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+    
+    // 1. Calculate drop time relative to zoom
+    const rawDropTime = (e.clientX - rect.left + scrollLeft) / pixelsPerSecond;
+
+    // 2. Apply Snap (Pass trackId to snap to neighbors on the SAME track)
+    const dropTime = getSnappedTime(rawDropTime, deleteClipId, trackId);
+
+    // 3. Collision Check
+    // We check if the SNAPPED position is occupied
+    if (isSpaceOccupied(trackId, dropTime, preferredDuration, deleteClipId)) {
+      // Only create new track if the specific spot is taken
+      createClipOnNewTrack(assetName, dropTime, false);
+      return;
+    }
+
+    // 4. Place clip on the existing track
+    saveHistory(clips, assets); // Save history before modifying
+
+    const newClip: Clip = {
+      id: deleteClipId || Date.now() + Math.random(), // Reuse ID if moving, else new
+      name: assetName,
+      start: dropTime,
+      duration: preferredDuration,
+      color: previousTrack !== trackId ? getRandomColor() : color,
+      trackId: trackId
+    };
+
+    setClips(prev => {
+      const filtered = deleteClipId !== null ? prev.filter(c => c.id !== deleteClipId) : prev;
+      return [...filtered, newClip];
+    });
+
+    setDeleteClipId(null);
+    showNotify("Clip moved", "success");
+  };
 
 
   const handleImportFile = async () => {
@@ -1197,372 +1252,364 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
 
   // --- RENDER ---
 return (
-    <div className="flex flex-col h-screen w-screen bg-black text-zinc-300 font-sans overflow-hidden">
+  <div className="flex flex-col h-screen w-screen bg-black text-zinc-300 font-sans overflow-hidden select-none">
+    
+    {/* NOTIFICATIONS SYSTEM */}
+    <AnimatePresence>
+      {notification && (
+        <motion.div 
+          initial={{ y: 50, opacity: 0 }} 
+          animate={{ y: 0, opacity: 1 }} 
+          exit={{ y: 20, opacity: 0 }}
+          className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-[500] px-6 py-3 rounded-full font-bold text-xs shadow-2xl flex items-center gap-3 border ${
+            notification.type === 'success' ? 'bg-zinc-900 border-green-500/50 text-green-400' : 'bg-zinc-900 border-red-500/50 text-red-400'
+          }`}
+        >
+          <div className={`w-2 h-2 rounded-full ${notification.type === 'success' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+          {notification.message.toUpperCase()}
+        </motion.div>
+      )}
+    </AnimatePresence>
 
-      {/* Notifications */}
-      <AnimatePresence>
-        {notification && (
-          <motion.div 
-            initial={{ y: 50, opacity: 0 }} 
-            animate={{ y: 0, opacity: 1 }} 
-            exit={{ y: 20, opacity: 0 }}
-            className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-[500] px-6 py-3 rounded-full font-bold text-xs shadow-2xl flex items-center gap-3 border ${
-              notification.type === 'success' ? 'bg-zinc-900 border-green-500/50 text-green-400' : 'bg-zinc-900 border-red-500/50 text-red-400'
-            }`}
-          >
-            <div className={`w-2 h-2 rounded-full ${notification.type === 'success' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-            {notification.message.toUpperCase()}
-          </motion.div>
-        )}
-      </AnimatePresence>
+    {isSetupOpen ? (
+      /* --- PROJECT MANAGER VIEW --- */
+      <div className="flex flex-col h-full w-full bg-[#0a0a0a]">
+        <header className="h-16 border-b border-zinc-800 flex items-center justify-between px-8 bg-[#111]">
+          <div className="flex items-center gap-4">
+            <div className="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center font-black text-white">FC</div>
+            <h1 className="text-lg font-bold italic text-white">FREECUT <span className="text-zinc-500 font-light text-sm not-italic">MANAGER</span></h1>
+          </div>
+          <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Settings size={20} /></button>
+        </header>
 
-      {isSetupOpen ? (
-        /* PROJECT MANAGER (Mantido conforme original) */
-        <div className="flex flex-col h-full w-full bg-[#0a0a0a]">
-          <header className="h-16 border-b border-zinc-800 flex items-center justify-between px-8 bg-[#111]">
-            <div className="flex items-center gap-4">
-              <div className="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center font-black text-white">FC</div>
-              <h1 className="text-lg font-bold italic text-white">FREECUT <span className="text-zinc-500 font-light text-sm not-italic">MANAGER</span></h1>
-            </div>
-            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Settings size={20} /></button>
-          </header>
+        <main className="flex-1 flex overflow-hidden">
+          <aside className="w-64 border-r border-zinc-800 p-6 space-y-2 bg-[#0d0d0d]">
+            <button className="w-full flex items-center gap-3 px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm font-bold"><Clock size={18} /> Recent</button>
+            <button onClick={handleSelectRoot} className="w-full flex items-center gap-3 px-4 py-2 hover:bg-zinc-900 text-zinc-500 rounded-lg text-sm transition-colors"><FolderOpen size={18} /> Workspace</button>
+          </aside>
 
-          <main className="flex-1 flex overflow-hidden">
-            <aside className="w-64 border-r border-zinc-800 p-6 space-y-2 bg-[#0d0d0d]">
-              <button className="w-full flex items-center gap-3 px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm font-bold"><Clock size={18} /> Recent</button>
-              <button onClick={handleSelectRoot} className="w-full flex items-center gap-3 px-4 py-2 hover:bg-zinc-900 text-zinc-500 rounded-lg text-sm transition-colors"><FolderOpen size={18} /> Workspace</button>
-            </aside>
-
-            <section className="flex-1 p-10 overflow-y-auto">
-              <div className="flex justify-between items-end mb-10">
-                <div>
-                  <h2 className="text-3xl font-black text-white mb-1">Your Productions</h2>
-                  <p className="text-zinc-600 text-[10px] font-mono uppercase">{rootPath || 'Select a workspace'}</p>
-                </div>
-                <button onClick={() => setIsCreatingNew(true)} className="bg-red-600 hover:bg-red-700 text-white px-8 py-3 rounded-xl font-black text-xs flex items-center gap-2 transition-all shadow-xl shadow-red-900/40">
-                  <Plus size={20} strokeWidth={3} /> NEW PROJECT
-                </button>
+          <section className="flex-1 p-10 overflow-y-auto">
+            <div className="flex justify-between items-end mb-10">
+              <div>
+                <h2 className="text-3xl font-black text-white mb-1">Your Productions</h2>
+                <p className="text-zinc-600 text-[10px] font-mono uppercase">{rootPath || 'Select a workspace'}</p>
               </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                {projects.map((proj) => (
-                  <motion.div 
-                    key={proj.path} 
-                    whileHover={{ scale: 1.02 }} 
-                    onClick={() => openProject(proj.path)}
-                    className="group bg-[#121212] border border-zinc-800/50 rounded-2xl overflow-hidden cursor-pointer hover:border-red-600 transition-all relative"
-                  >
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); setProjectToDelete(proj); }}
-                      className="absolute top-2 right-2 z-50 p-2 bg-black/50 hover:bg-red-600 text-zinc-400 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
-                    >
-                      <X size={14} /> 
-                    </button>
-                    <div className="aspect-video bg-[#1a1a1a] flex items-center justify-center border-b border-zinc-800">
-                      <LayoutGrid size={40} className="text-zinc-800 group-hover:text-red-600/20" />
-                    </div>
-                    <div className="p-5">
-                      <h3 className="font-bold text-zinc-100 truncate text-sm uppercase">{proj.name}</h3>
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
-            </section>
-          </main>
-        </div>
-      ) : (
-        /* EDITOR VIEW */
-        <div className="flex flex-col h-full">
-          <header className="h-12 border-b border-zinc-800 flex items-center justify-between px-4 bg-[#111] z-10 shadow-md">
-            <div className="flex items-center gap-4">
-              <button  onClick={() => setIsSetupOpen(true)}  className="text-zinc-500 hover:text-white text-[10px] font-bold">BACK</button>
-              <h1 className="text-[11px] font-black uppercase text-white">{projectName}</h1>
-            </div>
-            <div className="flex items-center gap-3">
-              <button 
-                onClick={() => setIsImportModalOpen(true)}
-                className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white text-[10px] font-black px-6 py-2 rounded-full transition-all active:scale-95 shadow-lg shadow-red-900/20"
-              >
-                <Youtube size={14} /> Download
+              <button onClick={() => setIsCreatingNew(true)} className="bg-red-600 hover:bg-red-700 text-white px-8 py-3 rounded-xl font-black text-xs flex items-center gap-2 transition-all shadow-xl shadow-red-900/40">
+                <Plus size={20} strokeWidth={3} /> NEW PROJECT
               </button>
-              <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Share2 size={16}/></button>
-              <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Settings size={16}/></button>
-              <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Import size={16}/></button>
-            </div>
-          </header>
-
-          <main className="flex-1 flex overflow-hidden">
-            <aside className="w-64 border-r border-zinc-800 bg-[#0c0c0c] flex flex-col hidden lg:flex">
-              <div className="p-4 border-b border-zinc-900 flex justify-between items-center">
-                <h2 className="text-[10px] font-black text-zinc-500 uppercase">Assets</h2>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4">
-                <div onClick={handleImportFile} className="aspect-video border border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center group cursor-pointer hover:bg-zinc-900/50">
-                  <Plus size={20} className="text-zinc-700 group-hover:text-red-500" />
-                  <h2 className="text-[10px] font-black text-zinc-500 uppercase"> Import Media </h2>
-                </div>
-                {assets.map((asset, index) => (
-                  <motion.div 
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    key={index}
-                   onClick={(e) => toggleAssetSelection(asset, e.shiftKey || e.ctrlKey)}
-                    
-                    className={`bg-[#151515] border border-zinc-800 p-2 rounded-lg flex items-center gap-3 group hover:border-zinc-600 transition-all cursor-grab active:cursor-grabbing ${
-                      selectedAssets.includes(asset) ? 'bg-red-500/20 border-red-500' : 'border-zinc-800'
-                    }`}
-                    draggable="true"
-                    onDragStart={(e) => handleDragStart(e, null, null, null, asset, false, null)}
-                  >
-                    <div className="w-12 h-8 bg-black rounded flex items-center justify-center">
-                      <Play size={10} className="text-zinc-700 group-hover:text-red-500" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[10px] font-bold text-zinc-300 truncate">{asset}</p>
-                      <p className="text-[8px] text-zinc-600 uppercase font-black">Video Clip</p>
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
-            </aside>
-
-            <section className="flex-1 bg-black flex flex-col items-center justify-center p-8">
-              <div className="w-full max-w-4xl aspect-video bg-[#050505] rounded-xl border border-zinc-800 flex items-center justify-center relative"
-              onClick={togglePlay} >
-                {/* Ícone Central Dinâmico */}
-                {isPlaying ? (
-                  <Pause size={56} className="text-white/10 group-hover:text-white/40 transition-all" />
-                ) : (
-                  <Play size={56} className="text-white/10 group-hover:text-white/40 transition-all" />
-                )}
-              </div>
-
-              {/* CONTROLES ABAIXO DO PLAYER */}
-              <div className="flex items-center gap-8 mt-6">
-                <button className="text-zinc-500 hover:text-white transition-colors"><SkipBack size={24} fill="currentColor"/></button>
-                
-                <button 
-                  onClick={togglePlay}
-                  className="w-14 h-14 bg-white rounded-full flex items-center justify-center text-black hover:scale-110 active:scale-95 transition-all shadow-xl"
-                >
-                  {isPlaying ? <Pause size={28} fill="black" /> : <Play size={28} fill="black" className="ml-1" />}
-                </button>
-                
-                <button className="text-zinc-500 hover:text-white transition-colors"><SkipForward size={24} fill="currentColor"/></button>
-              </div>
-            </section>
-          </main>
-
-          <footer className="h-80 bg-[#0c0c0c] border-t border-zinc-800 flex flex-col z-20">
-            {/* Toolbar */}
-            <div className="h-10 border-b border-zinc-900 flex items-center px-4 justify-between bg-[#0e0e0e]">
-              <div className="flex items-center gap-6">
-                <button 
-                  onClick={handleSplit} 
-                  className="flex items-center gap-2 text-[10px] font-black text-zinc-500 hover:text-red-500 uppercase transition-colors"
-                >
-                  <Scissors size={14}/> Split (S)
-                </button>
-                
-                <button 
-                  onClick={() => {
-                    const newState = !isSnapEnabled;
-                    setIsSnapEnabled(newState);
-                    showNotify(`Snap: ${newState ? 'ON' : 'OFF'}`, "success");
-                  }}
-                  className={`flex items-center gap-2 text-[10px] font-black uppercase transition-all ${
-                    isSnapEnabled ? 'text-red-500' : 'text-zinc-500 hover:text-white'
-                  }`}
-                >
-                  <LayoutGrid size={14} className={isSnapEnabled ? "animate-pulse" : ""} />
-                  Snap {isSnapEnabled ? 'On' : 'Off'}
-                </button>
-
-                <div className="flex items-center gap-3 bg-zinc-900 px-4 py-2 rounded-lg border border-zinc-800">
-                  <ZoomOut size={16} className="text-zinc-500" />
-                  <input 
-                    type="range"
-                    min={MIN_ZOOM}
-                    max={MAX_ZOOM}
-                    value={pixelsPerSecond}
-                    onChange={(e) => setPixelsPerSecond(Number(e.target.value))}
-                    className="w-32 h-1 bg-zinc-300 rounded-lg appearance-none cursor-pointer accent-white"
-                  />
-                  <ZoomIn size={16} className="text-zinc-500" />
-                  <span className="text-[10px] font-mono text-zinc-500 w-10">
-                    {Math.round((pixelsPerSecond / 100) * 100)}%
-                  </span>
-                </div>
-
-                <div className="text-[10px] font-mono text-zinc-400 flex items-center gap-2">
-                  <Clock size={12} className="text-zinc-600" />
-                  POS: <span className="text-white font-bold w-16">
-                    {formatTime(playheadPos / PIXELS_PER_SECOND)}
-                  </span>
-                </div>
-              </div>
             </div>
 
-            {/* Timeline Viewport */}
-            <div 
-              ref={timelineContainerRef}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={handleDropOnEmptyArea}
-              onMouseDown={(e) => {
-                // Seek if clicking empty space in the timeline area
-                if (e.target === e.currentTarget) seekTo(e.clientX);
-              }}
-              className="flex-1 overflow-x-auto relative bg-[#080808] scrollbar-thin scrollbar-thumb-zinc-800"
-            >
-              {/* Ruler */}
-              <div 
-                className="h-7 border-b border-zinc-900 sticky top-0 bg-[#080808]/90 backdrop-blur-md z-50 cursor-crosshair select-none"
-                onMouseDown={handlePlayheadDrag}
-              >
-               {[...Array(100)].map((_, i) => {
-                    const timeInSeconds = i * 10; // Rótulos a cada 10 segundos
-                    return (
-                      <div 
-                        key={i} 
-                        className="absolute border-l border-zinc-800 h-full text-[8px] pl-1.5 pt-1 text-zinc-600 font-mono" 
-                        style={{ left: timeInSeconds * pixelsPerSecond }}
-                      >
-                        {formatTime(timeInSeconds)}
-                      </div>
-                    );
-                  })}
-              </div>
-
-              {/* Content Area */}
-              <div className="p-4 min-w-[10000px] relative h-full flex flex-col gap-1">
-                
-                {/* Playhead Line */}
-                <div 
-                  className="absolute top-0 bottom-0 w-[2px] bg-red-600 z-40 pointer-events-none" 
-                  style={{ left: playheadPos + 16 }} // +16 for padding
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {projects.map((proj) => (
+                <motion.div 
+                  key={proj.path} 
+                  whileHover={{ scale: 1.02 }} 
+                  onClick={() => openProject(proj.path)}
+                  className="group bg-[#121212] border border-zinc-800/50 rounded-2xl overflow-hidden cursor-pointer hover:border-red-600 transition-all relative"
                 >
-                  <div className="w-3 h-3 bg-red-600 rounded-full -ml-[5.5px] -mt-1 shadow-[0_0_10px_rgba(220,38,38,0.5)]" />
-                </div>
-
-                {/* Tracks Rendering */}
-                {tracks.map((trackId) => (
-                  <div 
-                    key={trackId}
-                    onDragOver={handleDragOver}
-                    onDrop={(e) => handleDropOnTimeline(e, trackId)}
-                    className="h-20 bg-zinc-900/10 border border-zinc-800/30 rounded-lg relative group hover:bg-zinc-900/20 transition-colors"
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); setProjectToDelete(proj); }}
+                    className="absolute top-2 right-2 z-50 p-2 bg-black/50 hover:bg-red-600 text-zinc-400 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
                   >
-                    <div className="absolute left-2 top-1 text-[8px] font-black text-zinc-800 uppercase tracking-widest pointer-events-none">
-                      Track {trackId + 1}
-                    </div>
-
-                    {clips.filter(c => c.trackId === trackId).map((clip) => (
-                      <motion.div 
-                        key={clip.id}
-                        draggable="true"
-                        onDragStart={(e) => handleDragStart(e, clip.color, trackId, clip.duration, clip.name, true, clip.id)}
-                        onClick={(e) => {
-                          e.stopPropagation(); // Prevents the timeline background click from deselecting
-                          toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey || e.metaKey);
-                        }}
-                        className={`absolute inset-y-2 ${clip.color} rounded-lg flex items-center shadow-xl group z-10   ${
-                          selectedClipIds.includes(clip.id) 
-                             ? 'ring-2 ring-white' : ''
-                        }`}
-                        //style={{ width: clip.duration * PIXELS_PER_SECOND, left: clip.start * PIXELS_PER_SECOND }}
-                        style={{
-                          left: clip.start * pixelsPerSecond,
-                          width: clip.duration * pixelsPerSecond,
-                        }}
-                      >
-                        {/* Resize Handles */}
-                        <div 
-                          className="absolute left-0 inset-y-0 w-2 cursor-ew-resize bg-black/10 hover:bg-white/30 rounded-l-lg transition-colors"
-                          onMouseDown={(e) => startResizing(e, clip.id, 'left')}
-                        />
-                        
-                        <span className="text-[10px] font-black text-white truncate uppercase italic pointer-events-none">
-                          {clip.name}
-                        </span>
-
-                        <div 
-                          className="absolute right-0 inset-y-0 w-2 cursor-ew-resize bg-black/10 hover:bg-white/30 rounded-r-lg transition-colors"
-                          onMouseDown={(e) => startResizing(e, clip.id, 'right')}
-                        />
-                      </motion.div>
-                    ))}
+                    <X size={14} /> 
+                  </button>
+                  <div className="aspect-video bg-[#1a1a1a] flex items-center justify-center border-b border-zinc-800">
+                    <LayoutGrid size={40} className="text-zinc-800 group-hover:text-red-600/20" />
                   </div>
-                ))}
+                  <div className="p-5">
+                    <h3 className="font-bold text-zinc-100 truncate text-sm uppercase">{proj.name}</h3>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          </section>
+        </main>
+      </div>
+    ) : (
+      /* --- EDITOR VIEW --- */
+      <div className="flex flex-col h-full">
+        {/* Editor Header */}
+        <header className="h-12 border-b border-zinc-800 flex items-center justify-between px-4 bg-[#111] z-10 shadow-md">
+          <div className="flex items-center gap-4">
+            <button onClick={() => setIsSetupOpen(true)} className="text-zinc-500 hover:text-white text-[10px] font-bold">BACK</button>
+            <h1 className="text-[11px] font-black uppercase text-white tracking-widest">{projectName}</h1>
+          </div>
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => setIsImportModalOpen(true)}
+              className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white text-[10px] font-black px-6 py-2 rounded-full transition-all active:scale-95 shadow-lg shadow-red-900/20"
+            >
+              <Youtube size={14} /> Download
+            </button>
+            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Share2 size={16}/></button>
+            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Settings size={16}/></button>
+            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Import size={16}/></button>
+          </div>
+        </header>
 
-                <button 
-                  onClick={() => setTracks(prev => [...prev, Math.max(...prev, -1) + 1])}
-                  className="mt-4 w-fit flex items-center gap-2 text-[9px] font-black text-zinc-700 hover:text-zinc-400 uppercase tracking-widest transition-colors px-2 py-1"
+        {/* Top Section: Sidebar + Preview */}
+        <main className="flex-1 flex overflow-hidden min-h-0">
+          <aside className="w-64 border-r border-zinc-800 bg-[#0c0c0c] flex flex-col hidden lg:flex">
+            <div className="p-4 border-b border-zinc-900">
+              <h2 className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Media Library</h2>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              <div onClick={handleImportFile} className="aspect-video border border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center group cursor-pointer hover:bg-zinc-900/50 mb-4 transition-colors">
+                <Plus size={20} className="text-zinc-700 group-hover:text-red-500 transition-colors" />
+                <h2 className="text-[9px] font-black text-zinc-500 uppercase mt-2">Import Media</h2>
+              </div>
+              
+              {assets.map((asset, index) => (
+                <motion.div 
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  key={index}
+                  onClick={(e) => toggleAssetSelection(asset, e.shiftKey || e.ctrlKey)}
+                  className={`p-2 rounded-lg flex items-center gap-3 group transition-all cursor-grab active:cursor-grabbing border ${
+                    selectedAssets.includes(asset) ? 'bg-red-500/10 border-red-500' : 'bg-[#151515] border-zinc-800 hover:border-zinc-600'
+                  }`}
+                  draggable="true"
+                  onDragStart={(e) => handleDragStart(e, null, null, null, asset, false, null)}
                 >
-                  <Plus size={12} /> Add Track
-                </button>
+                  <div className="w-10 h-7 bg-black rounded flex items-center justify-center">
+                    <Play size={10} className={selectedAssets.includes(asset) ? "text-red-500" : "text-zinc-700"} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] font-bold text-zinc-300 truncate">{asset}</p>
+                    <p className="text-[8px] text-zinc-600 uppercase font-black">Video</p>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          </aside>
+
+          {/* PREVIEW PLAYER */}
+          <section className="flex-1 bg-black flex flex-col items-center justify-center p-8 relative">
+            <div 
+              className="w-full max-w-4xl aspect-video bg-[#050505] rounded-xl border border-zinc-800 flex items-center justify-center relative group cursor-pointer overflow-hidden shadow-2xl"
+              onClick={togglePlay}
+            >
+              {isPlaying ? (
+                <Pause size={56} className="text-white/5 group-hover:text-white/30 transition-all scale-90 group-hover:scale-100" />
+              ) : (
+                <Play size={56} className="text-white/5 group-hover:text-white/30 transition-all scale-90 group-hover:scale-100" />
+              )}
+            </div>
+
+            {/* PLAYER CONTROLS */}
+            <div className="flex items-center gap-8 mt-6">
+              <button className="text-zinc-600 hover:text-white transition-colors"><SkipBack size={24} fill="currentColor"/></button>
+              <button 
+                onClick={togglePlay}
+                className="w-14 h-14 bg-white rounded-full flex items-center justify-center text-black hover:scale-110 active:scale-95 transition-all shadow-xl shadow-white/5"
+              >
+                {isPlaying ? <Pause size={28} fill="black" /> : <Play size={28} fill="black" className="ml-1" />}
+              </button>
+              <button className="text-zinc-600 hover:text-white transition-colors"><SkipForward size={24} fill="currentColor"/></button>
+            </div>
+          </section>
+        </main>
+
+        {/* --- DYNAMIC TIMELINE SECTION --- */}
+        <footer 
+          className="bg-[#0c0c0c] border-t border-zinc-800 flex flex-col relative"
+          style={{ height: `${timelineHeight}px` }}
+        >
+          {/* TOP RESIZER HANDLE */}
+          <div 
+            onMouseDown={() => {
+              isResizingTimeline.current = true;
+              document.body.style.cursor = 'row-resize';
+            }}
+            className="absolute -top-1 left-0 w-full h-2 cursor-row-resize z-[60] hover:bg-blue-500/40 transition-colors"
+          />
+
+          {/* Timeline Toolbar */}
+          <div className="h-10 border-b border-zinc-900 flex items-center px-4 justify-between bg-[#0e0e0e] shrink-0">
+            <div className="flex items-center gap-6">
+              <button onClick={handleSplit} className="flex items-center gap-2 text-[10px] font-black text-zinc-500 hover:text-red-500 uppercase transition-colors">
+                <Scissors size={14}/> Split (S)
+              </button>
+              
+              <button 
+                onClick={() => {
+                  const newState = !isSnapEnabled;
+                  setIsSnapEnabled(newState);
+                  showNotify(`Snap: ${newState ? 'ON' : 'OFF'}`, "success");
+                }}
+                className={`flex items-center gap-2 text-[10px] font-black uppercase transition-all ${isSnapEnabled ? 'text-red-500' : 'text-zinc-500 hover:text-white'}`}
+              >
+                <LayoutGrid size={14} className={isSnapEnabled ? "animate-pulse" : ""} />
+                Snap
+              </button>
+
+              {/* Zoom Control */}
+              <div className="flex items-center gap-3 bg-zinc-900/50 px-3 py-1.5 rounded-md border border-zinc-800">
+                <ZoomOut size={14} className="text-zinc-600" />
+                <input
+                  type="range" min={MIN_ZOOM} max={MAX_ZOOM} value={pixelsPerSecond}
+                  onChange={(e) => setPixelsPerSecond(Number(e.target.value))}
+                  className="w-24 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-white
+                  [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white
+                  [&::-moz-range-thumb]:w-2.5 [&::-moz-range-thumb]:h-2.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:border-none"
+                />
+                <div className="text-[10px]" > {pixelsPerSecond} </div>
+                <ZoomIn size={14} className="text-zinc-600" />
+              </div>
+
+              {/* Timecode Display */}
+              <div className="text-[10px] font-mono text-zinc-400 flex items-center gap-2 bg-black/40 px-3 py-1 rounded border border-zinc-800/50">
+                <Clock size={12} className="text-zinc-600" />
+                <span className="text-white font-bold tracking-widest min-w-[80px]">
+                  {formatTime(playheadPos / pixelsPerSecond)}
+                </span>
               </div>
             </div>
-          </footer>
+          </div>
+
+          {/* Timeline Tracks Area */}
+          <div 
+            ref={timelineContainerRef}
+            className="flex-1 overflow-y-auto overflow-x-auto relative bg-[#080808] custom-scrollbar"
+            onMouseDown={(e) => { if (e.target === e.currentTarget) setSelectedClipIds([]); }}
+            onDrop={handleDropOnEmptyArea}
+            onDragOver={(e) => e.preventDefault()}
+          >
+            {/* Ruler (Always at top of scroll) */}
+            <div 
+              className="h-7 border-b border-zinc-900 sticky top-0 bg-[#080808]/95 backdrop-blur-sm z-[55] cursor-crosshair select-none min-w-[10000px]"
+              onMouseDown={handlePlayheadDrag}
+            >
+              {[...Array(150)].map((_, i) => {
+                const timeInSeconds = i * 5;
+                return (
+                  <div key={i} className="absolute border-l border-zinc-800/50 h-full text-[8px] pl-1 pt-0.5 text-zinc-600 font-mono" style={{ left: timeInSeconds * pixelsPerSecond }}>
+                    {timeInSeconds % 30 === 0 ? formatTime(timeInSeconds) : ''}
+                    <div className="absolute top-0 left-0 h-1.5 border-l border-zinc-700" />
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Playhead Vertical Line */}
+            <div className="absolute top-0 bottom-0 w-[1px] bg-red-600/60 z-[58] pointer-events-none" style={{ left: playheadPos }}>
+              <div className="w-3 h-3 bg-red-600 rounded-full -ml-[5.5px] -mt-1.5 shadow-[0_0_10px_rgba(220,38,38,0.8)]" />
+            </div>
+
+            {/* Tracks List */}
+            <div className="flex flex-col min-w-[10000px] p-2 gap-1.5">
+              {tracks.map((trackId) => (
+                <div 
+                  key={trackId}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => handleDropOnTimeline(e, trackId)}
+                  className="relative bg-zinc-900/10 border border-zinc-800/20 rounded-md group hover:bg-zinc-900/20 transition-colors"
+                  style={{ height: '64px', minHeight: '64px' }}
+                >
+                  <div className="absolute left-2 top-1 text-[7px] font-black text-zinc-800 uppercase tracking-[0.2em] pointer-events-none">
+                    Track {trackId + 1}
+                  </div>
+
+                  {/* Clips on this track */}
+                  {clips.filter(c => c.trackId === trackId).map((clip) => (
+                    <motion.div 
+                      key={clip.id}
+                      draggable="true"
+                      onDragStart={(e) => handleDragStart(e, clip.color, trackId, clip.duration, clip.name, true, clip.id)}
+                      onClick={(e) => { e.stopPropagation(); toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey); }}
+                      className={`absolute inset-y-1.5 ${clip.color} rounded-md flex items-center shadow-lg cursor-grab active:cursor-grabbing border-2 ${
+                        selectedClipIds.includes(clip.id) ? 'border-white ring-4 ring-white/10 z-30' : 'border-black/20'
+                      }`}
+                      style={{
+                        left: clip.start * pixelsPerSecond,
+                        width: clip.duration * pixelsPerSecond,
+                      }}
+                    >
+                      {/* Resize Handles */}
+                      <div className="absolute left-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'left')} />
+                      <div className="px-3 w-full">
+                        <p className="text-[9px] font-black text-white truncate uppercase italic leading-none drop-shadow-md">
+                          {clip.name}
+                        </p>
+                      </div>
+                      <div className="absolute right-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'right')} />
+                    </motion.div>
+                  ))}
+                </div>
+              ))}
+
+              <button 
+                onClick={() => setTracks(prev => [...prev, Math.max(...prev, -1) + 1])}
+                className="mt-2 w-fit flex items-center gap-2 text-[9px] font-black text-zinc-700 hover:text-zinc-400 uppercase tracking-widest transition-colors px-3 py-2 border border-dashed border-zinc-800/50 rounded-md"
+              >
+                <Plus size={10} /> Add Track
+              </button>
+            </div>
+          </div>
+        </footer>
+      </div>
+    )}
+
+    {/* MODALS - Mantidos para consistência */}
+    <AnimatePresence>
+      {isCreatingNew && (
+        <div className="fixed inset-0 bg-black/95 z-[300] flex items-center justify-center p-4">
+          <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }} className="bg-[#121212] border border-zinc-800 p-10 rounded-3xl w-full max-w-sm shadow-2xl">
+            <h2 className="text-2xl font-black mb-8 text-white italic">NEW PROJECT</h2>
+            <input type="text" placeholder="Project Title" value={projectName} onChange={(e) => setProjectName(e.target.value)}
+              className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-4 text-white font-bold outline-none focus:border-red-600 transition-all" />
+            <div className="flex gap-4 mt-6">
+              <button onClick={() => setIsCreatingNew(false)} className="flex-1 py-4 text-[10px] font-black text-zinc-500 uppercase">Cancel</button>
+              <button onClick={handleFinishSetup} className="flex-1 bg-red-600 py-4 rounded-2xl font-black text-xs text-white uppercase">Create</button>
+            </div>
+          </motion.div>
         </div>
       )}
+    </AnimatePresence>
 
-      {/* Modals e Confirmações (Mantidos conforme original) */}
-      <AnimatePresence>
-        {isCreatingNew && (
-          <div className="fixed inset-0 bg-black/95 z-[300] flex items-center justify-center p-4">
-            <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }} className="bg-[#121212] border border-zinc-800 p-10 rounded-3xl w-full max-w-sm shadow-2xl">
-              <h2 className="text-2xl font-black mb-8 text-white italic">NEW PROJECT</h2>
-              <input type="text" placeholder="Project Title" value={projectName} onChange={(e) => setProjectName(e.target.value)}
-                className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-4 text-white font-bold outline-none focus:border-red-600 transition-all" />
-              <div className="flex gap-4 mt-6">
-                <button onClick={() => setIsCreatingNew(false)} className="flex-1 py-4 text-[10px] font-black text-zinc-500 uppercase">Cancel</button>
-                <button onClick={handleFinishSetup} className="flex-1 bg-red-600 py-4 rounded-2xl font-black text-xs text-white uppercase">Create</button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+    {/* Import Modal */}
+    <AnimatePresence>
+      {isImportModalOpen && (
+        <div className="fixed inset-0 bg-black/90 z-[400] flex items-center justify-center p-4">
+          <motion.div initial={{ y: 20 }} animate={{ y: 0 }} className="bg-[#18181b] border border-zinc-800 p-8 rounded-3xl w-full max-w-md">
+            <h2 className="text-xl font-black flex items-center gap-3 text-white mb-6"><Youtube className="text-red-600" /> YT DOWNLOAD</h2>
+            <input type="text" placeholder="URL do vídeo..." value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)}
+              className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-4 text-sm font-bold text-white outline-none focus:border-red-600 mb-6" />
+            <button disabled={isDownloading} onClick={handleYoutubeDownload}
+              className={`w-full py-4 rounded-xl font-black text-xs text-white ${isDownloading ? 'bg-zinc-800' : 'bg-red-600 hover:bg-red-700'}`}>
+              {isDownloading ? "DOWNLOADING..." : "FETCH MEDIA"}
+            </button>
+            <button onClick={() => setIsImportModalOpen(false)} className="w-full mt-4 text-[10px] text-zinc-500 font-bold uppercase">Fechar</button>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
 
-      <AnimatePresence>
-        {isImportModalOpen && (
-          <div className="fixed inset-0 bg-black/90 z-[400] flex items-center justify-center p-4">
-            <motion.div initial={{ y: 20 }} animate={{ y: 0 }} className="bg-[#18181b] border border-zinc-800 p-8 rounded-3xl w-full max-w-md">
-              <h2 className="text-xl font-black flex items-center gap-3 text-white mb-6"><Youtube className="text-red-600" /> IMPORT</h2>
-              <input type="text" placeholder="https://youtube.com/..." value={youtubeUrl} onChange={(e) => setYoutubeUrl(e.target.value)}
-                className="w-full bg-black border border-zinc-700 rounded-xl px-4 py-4 text-sm font-bold text-white outline-none focus:border-red-600 mb-6" />
-              <button disabled={isDownloading} onClick={handleYoutubeDownload}
-                className={`w-full py-4 rounded-xl font-black text-xs text-white ${isDownloading ? 'bg-zinc-800' : 'bg-red-600 hover:bg-red-700'}`}>
-                {isDownloading ? "DOWNLOADING..." : "FETCH MEDIA"}
-              </button>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {projectToDelete && (
-          <div className="fixed inset-0 bg-black/90 z-[400] flex items-center justify-center p-4 backdrop-blur-md">
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }} 
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-[#121212] border border-red-900/30 p-8 rounded-3xl w-full max-w-sm text-center"
-            >
-              <div className="w-16 h-16 bg-red-600/10 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                <X size={32} />
-              </div>
-              <h2 className="text-xl font-black text-white mb-2 uppercase italic tracking-tighter">Are you sure?</h2>
-              <p className="text-zinc-500 text-xs mb-8">
-                You are about to delete <span className="text-white font-bold">{projectToDelete.name}</span>. 
-              </p>
-              <div className="flex gap-3">
-                <button onClick={() => setProjectToDelete(null)} className="flex-1 py-3 text-[10px] font-black text-zinc-500 hover:text-white uppercase tracking-widest">Cancel</button>
-                <button onClick={handleDeleteProject} className="flex-1 bg-red-600 hover:bg-red-700 py-3 rounded-xl font-black text-xs text-white uppercase shadow-lg shadow-red-900/20">Delete Project</button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
+    {/* Delete Confirmation */}
+    <AnimatePresence>
+      {projectToDelete && (
+        <div className="fixed inset-0 bg-black/90 z-[400] flex items-center justify-center p-4 backdrop-blur-md">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }} 
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.9, opacity: 0 }}
+            className="bg-[#121212] border border-red-900/30 p-8 rounded-3xl w-full max-w-sm text-center"
+          >
+            <div className="w-16 h-16 bg-red-600/10 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
+              <X size={32} />
+            </div>
+            <h2 className="text-xl font-black text-white mb-2 uppercase italic tracking-tighter">Are you sure?</h2>
+            <p className="text-zinc-500 text-xs mb-8">
+              Deleting <span className="text-white font-bold">{projectToDelete.name}</span> is permanent.
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => setProjectToDelete(null)} className="flex-1 py-3 text-[10px] font-black text-zinc-500 hover:text-white uppercase tracking-widest">Cancel</button>
+              <button onClick={handleDeleteProject} className="flex-1 bg-red-600 hover:bg-red-700 py-3 rounded-xl font-black text-xs text-white uppercase">Delete</button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  </div>
+);
 }
