@@ -84,6 +84,11 @@ export default function App() {
   const [selectedClipId, setSelectedClipId] = useState<number | null>(null);
   const [selectedAsset, setSelectedAsset] = useState<string | null>(null);
 
+
+
+  //snap function
+  const [isSnapEnabled, setIsSnapEnabled] = useState(true);
+
   /**
  * Calculates the boundaries for a specific clip
  */
@@ -132,6 +137,8 @@ export default function App() {
   // Code to make the clip resizable 
   const handleResize = (id: number, deltaX: number, side: 'left' | 'right') => {
     const { minStart, maxEndTimestamp } = getClipBoundaries(id);
+
+    deltaX = 0.2 * deltaX
     const deltaSeconds = deltaX / PIXELS_PER_SECOND;
 
     setClips(prev => prev.map(clip => {
@@ -275,6 +282,14 @@ export default function App() {
           e.preventDefault();
           handleFileHistoryNavigation(+1);
         }
+
+
+        // CTRL + T (Toggle Snap)
+        if (e.ctrlKey && e.key.toLowerCase() === 't') {
+          e.preventDefault();
+          setIsSnapEnabled(prev => !prev);
+          showNotify(`Magnetic Snap: ${!isSnapEnabled ? 'ON' : 'OFF'}`, "success");
+        }
       
 
 
@@ -284,13 +299,55 @@ export default function App() {
       };
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedClipId, clips]);
+    }, [selectedClipId, clips, isSnapEnabled]);
 
 
+    //Function to snap
+    // Helper to calculate the magnetic snap point
+      /**
+   /**
+   * Context-Aware Infinity Snap:
+   * Only snaps to the immediate left or right neighbors on the track.
+   * This prevents the clip from jumping over other clips to reach a distant edge.
+   */
+  const getSnappedTime = (currentTime: number, excludeId: number | null = null, trackId: number | null = null) => {
+    if (!isSnapEnabled || trackId === null) return currentTime;
 
+    // 1. Get all other clips on this track
+    const trackClips = clips
+      .filter(c => c.trackId === trackId && c.id !== excludeId)
+      .sort((a, b) => a.start - b.start);
 
+    if (trackClips.length === 0) return currentTime;
 
+    // 2. Find the immediate neighbor to the left
+    const leftNeighbor = [...trackClips].reverse().find(c => c.start <= currentTime);
+    // 3. Find the immediate neighbor to the right
+    const rightNeighbor = trackClips.find(c => c.start > currentTime);
 
+    let candidatePoints: number[] = [];
+    
+    // Only snap to the end of the clip on the left
+    if (leftNeighbor) candidatePoints.push(leftNeighbor.start + leftNeighbor.duration);
+    // Only snap to the start of the clip on the right
+    if (rightNeighbor) candidatePoints.push(rightNeighbor.start);
+
+    if (candidatePoints.length === 0) return currentTime;
+
+    // 4. Find which of these two neighbors is closer
+    let closestPoint = currentTime;
+    let minDistance = Infinity;
+
+    candidatePoints.forEach(point => {
+      const distance = Math.abs(currentTime - point);
+      if (distance < minDistance) {
+        minDistance = distance;
+        closestPoint = point;
+      }
+    });
+
+    return closestPoint;
+  };
 
 
 
@@ -630,21 +687,16 @@ const openProject = async (path: string) => {
 
 const isSpaceOccupied = (trackId: number, start: number, duration: number, excludeId: number | null = null) => {
   const newEnd = start + duration;
+  const TOLERANCE = 0.05; // Slightly increased for stability
 
   return clips.some(clip => {
-    // 1. Ignora se for o próprio clip que estamos movendo
     if (excludeId !== null && clip.id === excludeId) return false;
-    
-    // 2. Ignora se estiver em outra track
     if (clip.trackId !== trackId) return false;
 
     const clipEnd = clip.start + clip.duration;
-
-    // 3. Lógica de Sobreposição Matemática:
-    // Há colisão se o (Início A < Fim B) E (Fim A > Início B)
-    const collision = start < clipEnd && newEnd > clip.start;
     
-    return collision;
+    // Collision only if they overlap more than the tolerance
+    return start < (clipEnd - TOLERANCE) && newEnd > (clip.start + TOLERANCE);
   });
 };
 
@@ -653,11 +705,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   e.preventDefault();
   e.stopPropagation();
 
-
-
-
   const assetName = e.dataTransfer.getData("assetName");
-
 
   const color = e.dataTransfer.getData("color");
 
@@ -665,53 +713,35 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   const previousTrack = previousTrackRaw ? Number(previousTrackRaw) : null;
 
 
+  
   if (!assetName) return;
 
   const rect = e.currentTarget.getBoundingClientRect();
   const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-  const dropTime = (e.clientX - rect.left + scrollLeft) / PIXELS_PER_SECOND;
+  
+  // 1. Calculate raw time from mouse
+  const rawDropTime = (e.clientX - rect.left + scrollLeft) / PIXELS_PER_SECOND;
 
-  // 1. O mouse caiu EXATAMENTE em cima de algum clip existente?
-  const clipUnderMouse = clips.find(c => 
-    c.trackId === trackId && 
-    c.id !== deleteClipId && 
-    dropTime >= c.start && 
-    dropTime <= (c.start + c.duration)
-  );
-
-  // 2. Se caiu em cima de alguém, aí sim criamos nova track
-  if (clipUnderMouse) {
-    createClipOnNewTrack(assetName, dropTime, false);
-    return;
-  }
-
-  // 3. Se caiu no vazio, vamos ver quanto espaço temos até o PRÓXIMO clip
-  const nextClip = clips
-    .filter(c => c.trackId === trackId && c.start > dropTime && c.id !== deleteClipId)
-    .reduce((prev, curr) => (prev === null || curr.start < prev.start ? curr : prev), null as Clip | null);
+  // 2. Apply Snap (Strict or with Threshold)
+  const dropTime = getSnappedTime(rawDropTime, deleteClipId, trackId);
 
   const durationRaw = e.dataTransfer.getData("duration");
   const preferredDuration = durationRaw && Number(durationRaw) > 0 ? Number(durationRaw) : 40;
-  
-  // LÓGICA DE ENCAIXE:
-  // Se houver um clip na frente, a duração será o menor valor entre o preferido e o buraco disponível
-  let finalDuration = preferredDuration;
-  if (nextClip) {
-    const gap = nextClip.start - dropTime;
-    finalDuration = Math.min(preferredDuration, gap);
-  }
 
-  // 4. Segurança: Se por erro de cálculo o gap for minúsculo, criamos nova track
-  if (finalDuration < 0.2) {
+  // 3. Check for REAL collision (using the tolerance logic)
+  // If the snap point causes a real overlap, we move to a new track
+  if (isSpaceOccupied(trackId, dropTime, preferredDuration, deleteClipId)) {
+    // If it truly doesn't fit even with snapping, create new track
     createClipOnNewTrack(assetName, dropTime, false);
     return;
   }
 
+  // 4. If it fits (or just touches), place it on the current track
   const newClip: Clip = {
     id: Date.now() + Math.random(),
     name: assetName,
     start: dropTime,
-    duration: finalDuration,
+    duration: preferredDuration,
     color: previousTrack != trackId ?  getRandomColor() : color, //change the color only when change the track
     trackId: trackId
   };
@@ -723,6 +753,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
 
   setDeleteClipId(null);
 };
+
 
 
   const handleImportFile = async () => {
@@ -898,6 +929,20 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
             <div className="h-10 border-b border-zinc-900 flex items-center px-4 justify-between bg-[#0e0e0e]">
               <div className="flex items-center gap-6">
                 <button className="flex items-center gap-2 text-[10px] font-black text-zinc-500 hover:text-red-500 uppercase"><Scissors size={14}/> Split</button>
+                {/* MAGNETIC SNAP BUTTON */}
+                <button 
+                  onClick={() => {
+                    const newState = !isSnapEnabled;
+                    setIsSnapEnabled(newState);
+                    showNotify(`Snap: ${newState ? 'ON' : 'OFF'}`, "success");
+                  }}
+                  className={`flex items-center gap-2 text-[10px] font-black uppercase transition-all ${
+                    isSnapEnabled ? 'text-red-500' : 'text-zinc-500 hover:text-white'
+                  }`}
+                >
+                  <LayoutGrid size={14} className={isSnapEnabled ? "animate-pulse" : ""} />
+                  Snap {isSnapEnabled ? 'On' : 'Off'}
+                </button>
                 <div className="text-[10px] font-mono text-zinc-400">POS: <span className="text-white">{(playheadPos / PIXELS_PER_SECOND).toFixed(2)}s</span></div>
               </div>
             </div>
