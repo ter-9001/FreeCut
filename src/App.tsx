@@ -18,10 +18,21 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import {
-  Scissors, Plus, Play, SkipBack, Youtube,
-  Settings, Share2, FolderOpen, Save, X,
-  LayoutGrid, List, Clock,
+import { 
+  // ... outros ícones que já estavam lá
+  Play, 
+  Pause, 
+  Scissors, 
+  SkipBack,    // Adicione este
+  SkipForward, // Adicione este
+  LayoutGrid,
+  Plus,
+  Settings,
+  Clock,
+  FolderOpen,
+  X,
+  Youtube,
+  Share2,
   Import
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -106,6 +117,143 @@ export default function App() {
 
   //snap function
   const [isSnapEnabled, setIsSnapEnabled] = useState(true);
+
+
+  const [isPlaying, setIsPlaying] = useState(false);
+  const requestRef = useRef<number | null>(null);
+  const lastTimeRef = useRef<number | null>(null);
+
+
+  /**
+   * History Manager with a 100-step limit.
+   * Uses a simple array-based stack to track clips and assets.
+   */
+  const [history, setHistory] = useState<{ clips: Clip[], assets: string[] }[]>([]);
+  const [redoStack, setRedoStack] = useState<{ clips: Clip[], assets: string[] }[]>([]);
+
+
+  // This ref prevents the useEffect from saving history during an Undo/Redo operation
+  const isUndoRedoAction = useRef(false);
+
+  const MAX_HISTORY_STEPS = 100;
+
+  /**
+   * Manually pushes a snapshot to history.
+   * Should be called BEFORE the state is updated with the new change.
+   */
+  const saveHistory = (currentClips: Clip[], currentAssets: string[]) => {
+    setHistory(prev => {
+      const newHistory = [...prev, { clips: currentClips, assets: currentAssets }];
+      return newHistory.length > MAX_HISTORY_STEPS ? newHistory.slice(1) : newHistory;
+    });
+    setRedoStack([]); // New action invalidates the redo path
+  };
+
+  const handleUndo = () => {
+  if (history.length === 0) return;
+
+  // 1. Lock history saving
+  isUndoRedoAction.current = true;
+
+  const previousState = history[history.length - 1];
+  const newHistory = history.slice(0, -1);
+
+  setRedoStack(prev => [...prev, { clips, assets }]);
+  
+  setClips(previousState.clips);
+  setAssets(previousState.assets);
+  setHistory(newHistory);
+  
+  showNotify("Undo", "success");
+};
+
+  const handleRedo = () => {
+    if (redoStack.length === 0) return;
+
+    // 1. Lock history saving
+    isUndoRedoAction.current = true;
+
+    const nextState = redoStack[redoStack.length - 1];
+    const newRedoStack = redoStack.slice(0, -1);
+
+    setHistory(prev => [...prev, { clips, assets }]);
+
+    setClips(nextState.clips);
+    setAssets(nextState.assets);
+    setRedoStack(newRedoStack);
+    
+    showNotify("Redo", "success");
+  };
+
+//Code to make player needle walk
+  const togglePlay = () => {
+    setIsPlaying(prev => !prev);
+  };
+
+  const animate = (time: number) => {
+    if (lastTimeRef.current !== null) {
+      const deltaTime = (time - lastTimeRef.current) / 1000; // Segundos passados
+      
+      setPlayheadPos(prev => {
+        const nextPos = prev + (deltaTime * PIXELS_PER_SECOND);
+        // Opcional: Auto-scroll da timeline para seguir a agulha
+        if (timelineContainerRef.current) {
+          const container = timelineContainerRef.current;
+          const scrollRight = container.scrollLeft + container.clientWidth;
+          if (nextPos > scrollRight - 50) {
+            container.scrollLeft += 5; // Scroll suave
+          }
+        }
+        return nextPos;
+      });
+    }
+    lastTimeRef.current = time;
+    requestRef.current = requestAnimationFrame(animate);
+  };
+
+
+  const lastSavedState = useRef(JSON.stringify({ clips, assets }));
+
+  useEffect(() => {
+  const currentState = JSON.stringify({ clips, assets });
+  
+  if (currentState !== lastSavedState.current) {
+    // 1. Check if this change was triggered by Undo/Redo
+    if (isUndoRedoAction.current) {
+      // If it was, we just update the ref and reset the lock
+      lastSavedState.current = currentState;
+      isUndoRedoAction.current = false;
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const oldState = JSON.parse(lastSavedState.current);
+      
+      setHistory(prev => {
+        const newHistory = [...prev, oldState];
+        return newHistory.length > MAX_HISTORY_STEPS ? newHistory.slice(1) : newHistory;
+      });
+      
+      setRedoStack([]);
+      lastSavedState.current = currentState;
+    }, 500); 
+
+      return () => clearTimeout(timer);
+    }
+    }, [clips, assets]);
+  
+
+  useEffect(() => {
+    if (isPlaying) {
+      requestRef.current = requestAnimationFrame(animate);
+    } else {
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      lastTimeRef.current = null;
+    }
+    return () => {
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    };
+  }, [isPlaying]);
 
   /**
  * Calculates the boundaries for a specific clip
@@ -267,7 +415,22 @@ export default function App() {
     return () => clearTimeout(timeoutId);
   }, [clips, assets, projectName, isProjectLoaded]);  
 
+  //Formating pos lable for min and segs
 
+  const formatTime = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 100);
+
+    // Formato HH:MM:SS se tiver mais de uma hora, senão MM:SS
+    const parts = [];
+    if (h > 0) parts.push(h.toString().padStart(2, '0'));
+    parts.push(m.toString().padStart(2, '0'));
+    parts.push(s.toString().padStart(2, '0'));
+
+    return `${parts.join(':')}.${ms.toString().padStart(2, '0')}`;
+  };
 
 
   useEffect(() => {
@@ -289,16 +452,16 @@ export default function App() {
         }
 
 
-        // CTRL + Z (Undo)
-        if (e.ctrlKey && e.key.toLowerCase() === 'z') {
+        // Undo: Ctrl+Z or Cmd+Z
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
           e.preventDefault();
-          console.log("Z")
-          handleFileHistoryNavigation(-1);
+          handleUndo();
         }
-        // CTRL + Y (Redo)
-        if (e.ctrlKey && e.key.toLowerCase() === 'y') {
+
+        // Redo: Ctrl+Y / Cmd+Shift+Z / Ctrl+Shift+Z
+        if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) {
           e.preventDefault();
-          handleFileHistoryNavigation(+1);
+          handleRedo();
         }
 
 
@@ -313,6 +476,13 @@ export default function App() {
           e.preventDefault();
           handleSplit();
         }
+
+
+        //Space (Player Needle move)  
+        if (e.code === 'Space') {
+          e.preventDefault(); // Impede o scroll da página
+          togglePlay();
+        }
       
 
 
@@ -322,7 +492,7 @@ export default function App() {
       };
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedClipId, clips, isSnapEnabled]);
+    }, [selectedClipId, clips, isSnapEnabled, assets, history, redoStack]);
 
 
     /**
@@ -372,63 +542,64 @@ export default function App() {
      * prevent splitting and warn the user to avoid accidental cuts.
      * 3. Only split without selection if exactly ONE clip is found under the playhead.
      */
-  const handleSplit = () => {
-    const playheadTime = playheadPos / PIXELS_PER_SECOND;
+ const handleSplit = () => {
+  const playheadTime = playheadPos / PIXELS_PER_SECOND;
 
-    // Find ALL clips under the playhead at this moment
-    const clipsAtPlayhead = clips.filter(c => 
-      playheadTime > c.start && 
-      playheadTime < (c.start + c.duration)
-    );
+  // 1. Find ALL clips under the playhead at this moment
+  const clipsAtPlayhead = clips.filter(c => 
+    playheadTime > c.start && 
+    playheadTime < (c.start + c.duration)
+  );
 
-    let targetClip: Clip | undefined;
+  let targetClip: Clip | undefined;
 
-    // Case A: A clip is specifically selected
-    if (selectedClipId !== null) {
-      targetClip = clipsAtPlayhead.find(c => c.id === selectedClipId);
-      
-      // Safety check: if the selection is NOT under the playhead, cancel
-      if (!targetClip) {
-        showNotify("Selected clip is not under the playhead", "error");
-        return;
-      }
-    } 
-    // Case B: No selection, check how many clips are under the playhead
-    else {
-      if (clipsAtPlayhead.length > 1) {
-        showNotify("Multiple clips found! Select one to split.", "error");
-        return;
-      }
-      if (clipsAtPlayhead.length === 0) {
-        showNotify("No clip under the playhead", "error");
-        return;
-      }
-      // Only one clip found, safe to split
-      targetClip = clipsAtPlayhead[0];
+  // 2. Selection Logic
+  if (selectedClipId !== null) {
+    targetClip = clipsAtPlayhead.find(c => c.id === selectedClipId);
+    
+    if (!targetClip) {
+      showNotify("Selected clip is not under the playhead", "error");
+      return;
     }
+  } else {
+    if (clipsAtPlayhead.length > 1) {
+      showNotify("Multiple clips found! Select one to split.", "error");
+      return;
+    }
+    if (clipsAtPlayhead.length === 0) {
+      showNotify("No clip under the playhead", "error");
+      return;
+    }
+    targetClip = clipsAtPlayhead[0];
+  }
 
-    // --- PERFORM THE SPLIT ---
-    const firstPartDuration = playheadTime - targetClip.start;
-    const secondPartDuration = targetClip.duration - firstPartDuration;
+  // 3. CRITICAL: Save history ONLY after all checks pass
+  // This ensures we don't save a history state if the function returns early
+  saveHistory(clips, assets);
 
-    const firstClip = { ...targetClip, duration: firstPartDuration };
-    const secondClip = { 
-      ...targetClip, 
-      id: Date.now() + Math.random(), 
-      start: playheadTime, 
-      duration: secondPartDuration 
-    };
+  // 4. Calculate new segments
+  const firstPartDuration = playheadTime - targetClip.start;
+  const secondPartDuration = targetClip.duration - firstPartDuration;
 
-    setClips(prev => [
-      ...prev.filter(c => c.id !== targetClip!.id),
-      firstClip,
-      secondClip
-    ]);
-
-    // Keep the new second part selected for easier editing
-    setSelectedClipId(secondClip.id);
-    showNotify("Clip split!", "success");
+  // Create the two new clip pieces
+  const firstClip = { ...targetClip, duration: firstPartDuration };
+  const secondClip = { 
+    ...targetClip, 
+    id: Date.now() + Math.random(), 
+    start: playheadTime, 
+    duration: secondPartDuration 
   };
+
+  // 5. Update state
+  setClips(prev => [
+    ...prev.filter(c => c.id !== targetClip!.id),
+    firstClip,
+    secondClip
+  ]);
+
+  setSelectedClipId(secondClip.id);
+  showNotify("Clip split!", "success");
+};
     //Function to snap
     // Helper to calculate the magnetic snap point
       /**
@@ -879,6 +1050,10 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   });
 
   setDeleteClipId(null);
+
+
+  updatehistory()
+  
 };
 
 
@@ -1046,8 +1221,28 @@ return (
             </aside>
 
             <section className="flex-1 bg-black flex flex-col items-center justify-center p-8">
-              <div className="w-full max-w-4xl aspect-video bg-[#050505] rounded-xl border border-zinc-800 flex items-center justify-center relative">
-                <Play size={56} className="text-white/10" />
+              <div className="w-full max-w-4xl aspect-video bg-[#050505] rounded-xl border border-zinc-800 flex items-center justify-center relative"
+              onClick={togglePlay} >
+                {/* Ícone Central Dinâmico */}
+                {isPlaying ? (
+                  <Pause size={56} className="text-white/10 group-hover:text-white/40 transition-all" />
+                ) : (
+                  <Play size={56} className="text-white/10 group-hover:text-white/40 transition-all" />
+                )}
+              </div>
+
+              {/* CONTROLES ABAIXO DO PLAYER */}
+              <div className="flex items-center gap-8 mt-6">
+                <button className="text-zinc-500 hover:text-white transition-colors"><SkipBack size={24} fill="currentColor"/></button>
+                
+                <button 
+                  onClick={togglePlay}
+                  className="w-14 h-14 bg-white rounded-full flex items-center justify-center text-black hover:scale-110 active:scale-95 transition-all shadow-xl"
+                >
+                  {isPlaying ? <Pause size={28} fill="black" /> : <Play size={28} fill="black" className="ml-1" />}
+                </button>
+                
+                <button className="text-zinc-500 hover:text-white transition-colors"><SkipForward size={24} fill="currentColor"/></button>
               </div>
             </section>
           </main>
@@ -1077,8 +1272,11 @@ return (
                   Snap {isSnapEnabled ? 'On' : 'Off'}
                 </button>
 
-                <div className="text-[10px] font-mono text-zinc-400">
-                  POS: <span className="text-white">{(playheadPos / PIXELS_PER_SECOND).toFixed(2)}s</span>
+                <div className="text-[10px] font-mono text-zinc-400 flex items-center gap-2">
+                  <Clock size={12} className="text-zinc-600" />
+                  POS: <span className="text-white font-bold w-16">
+                    {formatTime(playheadPos / PIXELS_PER_SECOND)}
+                  </span>
                 </div>
               </div>
             </div>
@@ -1099,15 +1297,18 @@ return (
                 className="h-7 border-b border-zinc-900 sticky top-0 bg-[#080808]/90 backdrop-blur-md z-50 cursor-crosshair select-none"
                 onMouseDown={handlePlayheadDrag}
               >
-                {[...Array(100)].map((_, i) => (
-                  <div 
-                    key={i} 
-                    className="absolute border-l border-zinc-800 h-full text-[8px] pl-1.5 pt-1 text-zinc-600 font-mono" 
-                    style={{left: i * 10 * PIXELS_PER_SECOND}}
-                  >
-                    {i * 10}s
-                  </div>
-                ))}
+               {[...Array(100)].map((_, i) => {
+                    const timeInSeconds = i * 10; // Rótulos a cada 10 segundos
+                    return (
+                      <div 
+                        key={i} 
+                        className="absolute border-l border-zinc-800 h-full text-[8px] pl-1.5 pt-1 text-zinc-600 font-mono" 
+                        style={{ left: timeInSeconds * PIXELS_PER_SECOND }}
+                      >
+                        {formatTime(timeInSeconds)}
+                      </div>
+                    );
+                  })}
               </div>
 
               {/* Content Area */}
