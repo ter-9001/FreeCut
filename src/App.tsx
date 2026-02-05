@@ -139,6 +139,15 @@ export default function App() {
   const [timelineHeight, setTimelineHeight] = useState(300); // Default height
   const isResizingTimeline = useRef(false);
 
+  //States for Box Selection, make a box with mouse to select severals clips
+  const [isBoxSelecting, setIsBoxSelecting] = useState(false);
+  const [boxStart, setBoxStart] = useState({ x: 0, y: 0 });
+  const [boxEnd, setBoxEnd] = useState({ x: 0, y: 0 });
+
+
+  const [clipboard, setClipboard] = useState<Clip[]>([]);
+
+
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizingTimeline.current) return;
@@ -218,6 +227,134 @@ export default function App() {
     });
   };
 
+
+//functions to make the Box Selection
+const handleTimelineMouseDown = (e: React.MouseEvent) => {
+  // Apenas inicia se clicar no fundo da timeline (não em clips)
+  if (e.target !== e.currentTarget) return;
+
+  const rect = e.currentTarget.getBoundingClientRect();
+  const startX = e.clientX - rect.left;
+  const startY = e.clientY - rect.top;
+
+  setIsBoxSelecting(true);
+  setBoxStart({ x: startX, y: startY });
+  setBoxEnd({ x: startX, y: startY });
+
+  // Limpa seleção anterior a menos que use Shift
+  if (!e.shiftKey) setSelectedClipIds([]);
+};
+
+
+//Function to copy and paste clips
+const handleCopy = () => {
+  if (selectedClipIds.length === 0) return;
+  
+  // Filtra os clips selecionados para copiar
+  const selectedClips = clips.filter(c => selectedClipIds.includes(c.id));
+  setClipboard(selectedClips);
+  showNotify(`${selectedClips.length} clips copied`, "success");
+};
+
+const handlePaste = () => {
+  if (clipboard.length === 0) return;
+
+  const playheadTime = playheadPos / pixelsPerSecond;
+  saveHistory(clips, assets);
+
+  // 1. Encontrar o clip que começa mais cedo no clipboard para usar como referência
+  const minStart = Math.min(...clipboard.map(c => c.start));
+
+  let newClipsToAdd: Clip[] = [];
+  let currentClipsState = [...clips];
+  let currentTracksState = [...tracks];
+
+  // 2. Processar cada clip do clipboard
+  clipboard.forEach(originalClip => {
+    // Calcula o novo tempo (offset relativo à agulha)
+    const relativeOffset = originalClip.start - minStart;
+    const targetStart = playheadTime + relativeOffset;
+    
+    // Tentar colar na mesma track original, se não houver espaço, procurar a próxima
+    let targetTrack = originalClip.trackId;
+    
+    // Função interna para achar espaço (procura tracks existentes ou cria nova)
+    while (isSpaceOccupiedByState(currentClipsState, targetTrack, targetStart, originalClip.duration)) {
+      targetTrack++;
+      if (!currentTracksState.includes(targetTrack)) {
+        currentTracksState.push(targetTrack);
+        currentTracksState.sort((a, b) => a - b);
+      }
+    }
+
+    const pastedClip: Clip = {
+      ...originalClip,
+      id: Date.now() + Math.random(), // Novo ID único
+      start: targetStart,
+      trackId: targetTrack
+    };
+
+    newClipsToAdd.push(pastedClip);
+    currentClipsState.push(pastedClip);
+  });
+
+  setTracks(currentTracksState);
+  setClips(currentClipsState);
+  
+  // Opcional: Selecionar os novos clips colados
+  setSelectedClipIds(newClipsToAdd.map(c => c.id));
+  showNotify("Pasted at playhead", "success");
+};
+
+// Função auxiliar para verificar espaço sem depender do estado ainda não atualizado
+const isSpaceOccupiedByState = (currentClips: Clip[], trackId: number, start: number, duration: number) => {
+  const end = start + duration;
+  const TOLERANCE = 0.1;
+  return currentClips.some(c => 
+    c.trackId === trackId && 
+    start < (c.start + c.duration - TOLERANCE) && 
+    end > (c.start + TOLERANCE)
+  );
+};
+
+const handleTimelineMouseMove = (e: React.MouseEvent) => {
+  if (!isBoxSelecting) return;
+
+  const rect = e.currentTarget.getBoundingClientRect();
+  const currentX = e.clientX - rect.left;
+  const currentY = e.clientY - rect.top;
+
+  setBoxEnd({ x: currentX, y: currentY });
+
+  // Cálculo do retângulo
+  const left = Math.min(boxStart.x, currentX);
+  const right = Math.max(boxStart.x, currentX);
+  const top = Math.min(boxStart.y, currentY);
+  const bottom = Math.max(boxStart.y, currentY);
+
+  // Detetar clips dentro do retângulo
+  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+  
+  const collidingClips = clips.filter(clip => {
+    const clipLeft = (clip.start * pixelsPerSecond) - scrollLeft;
+    const clipRight = clipLeft + (clip.duration * pixelsPerSecond);
+    const clipTop = (clip.trackId * 64) + 30; // 64px altura track + margem ruler
+    const clipBottom = clipTop + 60;
+
+    return (
+      clipRight > left &&
+      clipLeft < right &&
+      clipBottom > top &&
+      clipTop < bottom
+    );
+  }).map(c => c.id);
+
+  setSelectedClipIds(collidingClips);
+};
+
+const handleTimelineMouseUp = () => {
+  setIsBoxSelecting(false);
+};
 
 
 
@@ -647,6 +784,35 @@ export default function App() {
           e.preventDefault(); // Impede o scroll da página
           togglePlay();
         }
+
+        // Ctrl + Q (Select Left)
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'q') {
+          e.preventDefault();
+          handleMassSplitAndSelect('left');
+        }
+
+        // Ctrl + W (Select Right)
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'w') {
+          e.preventDefault();
+          handleMassSplitAndSelect('right');
+        }
+
+
+
+        // Ctrl + C
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+          e.preventDefault();
+          handleCopy();
+        }
+
+        // Ctrl + V
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+          e.preventDefault();
+          handlePaste();
+        }
+
+
+
       
 
 
@@ -868,65 +1034,53 @@ export default function App() {
     };
 
 const createClipOnNewTrack = (assetName: string, dropTime: number, isAtTop: boolean) => {
-  
-  //Higher Track more one
+  // 1. Gera um ID de track realmente novo
   const newTrackId = tracks.length > 0 ? Math.max(...tracks) + 1 : 0;
   
-  // 2. Atualizar Tracks com Higienização
   setTracks(prevTracks => {
     const updatedTracks = [...prevTracks, newTrackId];
-    return Array.from(new Set(updatedTracks));
+    return Array.from(new Set(updatedTracks)).sort((a, b) => a - b);
   });
 
-  // 3. Criar o Clip usando o ID que acabamos de gerar (newTrackId)
+  // 2. Criar o Clip com ID ÚNICO (Date.now() evita colisões que o clips.length causa)
   const newClip: Clip = {
-    id: clips.length,
+    id: Date.now() + Math.random(), // ID Único
     name: assetName,
     start: dropTime,
     duration: 40,
     color: getRandomColor(),
-    trackId: newTrackId // <-- Crucial: usar a variável, não tracks.length
+    trackId: newTrackId 
   };
 
   setClips(prevClips => {
+    // Filtra o clip antigo (se estivermos movendo) e adiciona o novo
     const filtered = deleteClipId !== null 
       ? prevClips.filter(c => c.id !== deleteClipId) 
       : prevClips;
     return [...filtered, newClip];
   });
 
+  // 3. Resetar estados de arraste
   setDeleteClipId(null);
   showNotify("New track created", "success");
-  
 };
-
 //create new timelines dropping assets close of a track
 const handleDropOnEmptyArea = (e: React.DragEvent) => {
   e.preventDefault();
-  e.stopPropagation();
-
-  if (e.dataTransfer.files.length > 0) return;
-
-  const assetName = e.dataTransfer.getData("assetName");
-  if (!assetName) return;
-
-  const container = e.currentTarget.getBoundingClientRect();
-  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
   
-  const relativeY = e.clientY - container.top;
-  const x = e.clientX - container.left + scrollLeft;
-  const dropTime = Math.max(0, x / PIXELS_PER_SECOND);
+  // ... (seus cálculos de tempo e offset existentes)
 
-  const TRACK_HEIGHT = 80;
-  const totalTracksHeight = tracks.length * TRACK_HEIGHT;
-  const margin = 20;
+  const maxExistingTrack = Math.max(...tracks, -1);
+  const nextTrackId = maxExistingTrack + 1;
 
-  // Se soltar acima ou abaixo, a função centralizada resolve
-  if (relativeY < -margin) {
-    createClipOnNewTrack(assetName, dropTime, true);
-  } else if (relativeY > totalTracksHeight + margin) {
-    createClipOnNewTrack(assetName, dropTime, false);
-  }
+  // 1. Criar a nova track primeiro
+  setTracks(prev => [...prev, nextTrackId]);
+
+  // 2. O React pode demorar um ciclo para atualizar 'tracks', 
+  // mas o 'setClips' abaixo já vai referenciar o 'nextTrackId' correto.
+  // O segredo está no Passo 2 abaixo (o Render).
+  
+  // ... lógica de mover os clips selecionados para o nextTrackId
 };
 
   // Function to lead with Drag direct from OS
@@ -1127,96 +1281,174 @@ const openProject = async (path: string) => {
     }
   };
 
-  const handleDragStart = (e: React.DragEvent, color:string, trackId:number, duration:number, assetName: string, deletePrevious: boolean = false, idToDelete: number = 0 ) => {
+  const handleDragStart = (
+  e: React.DragEvent, 
+  color: string | null, 
+  trackId: number | null, 
+  duration: number | null, 
+  assetName: string, 
+  isTimelineClip: boolean, 
+  clipId: number | null
+) => {
+  // Se o clip arrastado não estiver na seleção atual, selecionamos apenas ele
+  if (clipId !== null && !selectedClipIds.includes(clipId)) {
+    setSelectedClipIds([clipId]);
+  }
+
+  // Guardamos os dados do clip "âncora" (o que o mouse pegou)
+  e.dataTransfer.setData("assetName", assetName);
+  e.dataTransfer.setData("isTimelineClip", isTimelineClip.toString());
+  
+  if (isTimelineClip && clipId !== null) {
+    setDeleteClipId(clipId);
     
-    
-    
-    e.dataTransfer.setData("assetName", assetName);
-    
-    e.dataTransfer.setData("color", color);
-
-    e.dataTransfer.setData("previousTrack", trackId.toString())
-
-    e.dataTransfer.setData("duration", duration.toString())
-
-
-    e.dataTransfer.effectAllowed = "copy";
-
-    if(deletePrevious)
-      setDeleteClipId(idToDelete)
-
-  };
+    // Guardamos o tempo de início do clip âncora para calcular o deslocamento dos outros
+    const anchorClip = clips.find(c => c.id === clipId);
+    if (anchorClip) {
+      e.dataTransfer.setData("anchorStart", anchorClip.start.toString());
+    }
+  }
+};
 
   const isSpaceOccupied = (trackId: number, start: number, duration: number, excludeId: number | null = null) => {
     const newEnd = start + duration;
-    // Increase tolerance to 0.1s to handle sub-pixel rounding during snaps
-    const TOLERANCE = 0.1; 
+    
+    // Margem de erro em segundos (ex: 0.05s). 
+    // Isso permite que o clip "encoste" sem disparar a colisão por erro de float.
+    const EPSILON = 0.01; 
 
     return clips.some(clip => {
-      // If we are moving an existing clip, ignore its old position in the check
+      // Ignora o próprio clip que estamos movendo
       if (excludeId !== null && clip.id === excludeId) return false;
+      
+      // Só verifica clips na mesma track
       if (clip.trackId !== trackId) return false;
 
       const clipEnd = clip.start + clip.duration;
+
+      // Lógica de Intersecção Refinada:
+      // Um clip só ocupa o espaço se ele entrar MAIS do que o EPSILON no vizinho.
+      const isOverlapping = start < (clipEnd - EPSILON) && newEnd > (clip.start + EPSILON);
       
-      // Check overlap: the new clip only collides if it enters significantly into another clip
-      return start < (clipEnd - TOLERANCE) && newEnd > (clip.start + TOLERANCE);
+      return isOverlapping;
     });
   };
 
 
-  const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    const assetName = e.dataTransfer.getData("assetName");
-    const color = e.dataTransfer.getData("color");
-    const previousTrackRaw = e.dataTransfer.getData("previousTrack");
-    const previousTrack = previousTrackRaw ? Number(previousTrackRaw) : null;
-    const durationRaw = e.dataTransfer.getData("duration");
-    const preferredDuration = durationRaw && Number(durationRaw) > 0 ? Number(durationRaw) : 40;
-
-    if (!assetName) return;
-
-    const rect = e.currentTarget.getBoundingClientRect();
-    const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+  //make function split and selection
+  const handleMassSplitAndSelect = (direction: 'left' | 'right') => {
+    const playheadTime = playheadPos / pixelsPerSecond;
     
-    // 1. Calculate drop time relative to zoom
-    const rawDropTime = (e.clientX - rect.left + scrollLeft) / pixelsPerSecond;
+    // 1. Salvar histórico antes da carnificina
+    saveHistory(clips, assets);
 
-    // 2. Apply Snap (Pass trackId to snap to neighbors on the SAME track)
-    const dropTime = getSnappedTime(rawDropTime, deleteClipId, trackId);
+    let newClips = [...clips];
+    const clipsToSplit = clips.filter(c => playheadTime > c.start && playheadTime < (c.start + c.duration));
 
-    // 3. Collision Check
-    // We check if the SNAPPED position is occupied
-    if (isSpaceOccupied(trackId, dropTime, preferredDuration, deleteClipId)) {
-      // Only create new track if the specific spot is taken
-      createClipOnNewTrack(assetName, dropTime, false);
-      return;
-    }
+    // 2. Realizar o Split em todos os clips que estão sob a agulha
+    clipsToSplit.forEach(targetClip => {
+      const firstPartDuration = playheadTime - targetClip.start;
+      const secondPartDuration = targetClip.duration - firstPartDuration;
 
-    // 4. Place clip on the existing track
-    saveHistory(clips, assets); // Save history before modifying
+      const firstClip = { ...targetClip, duration: firstPartDuration };
+      const secondClip = { 
+        ...targetClip, 
+        id: Date.now() + Math.random(), 
+        start: playheadTime, 
+        duration: secondPartDuration 
+      };
 
-    const newClip: Clip = {
-      id: deleteClipId || Date.now() + Math.random(), // Reuse ID if moving, else new
-      name: assetName,
-      start: dropTime,
-      duration: preferredDuration,
-      color: previousTrack !== trackId ? getRandomColor() : color,
-      trackId: trackId
-    };
+      // Substitui o original pelos dois novos
+      newClips = [
+        ...newClips.filter(c => c.id !== targetClip.id),
+        firstClip,
+        secondClip
+      ];
+    });
+
+    // 3. Atualizar o estado dos clips primeiro
+    setClips(newClips);
+
+    // 4. Selecionar tudo à esquerda ou à direita
+    // Clips à esquerda: fim do clip <= tempo da agulha
+    // Clips à direita: início do clip >= tempo da agulha
+    const selectedIds = newClips
+      .filter(c => direction === 'left' ? c.start < playheadTime : c.start >= playheadTime)
+      .map(c => c.id);
+
+    setSelectedClipIds(selectedIds);
+    setSelectedAssets([]); // Limpa seleção de assets para focar na timeline
+    
+    showNotify(`Selected everything to the ${direction}`, "success");
+  };
+
+
+const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
+  e.preventDefault();
+  
+  const isTimelineClip = e.dataTransfer.getData("isTimelineClip") === "true";
+  const anchorStart = parseFloat(e.dataTransfer.getData("anchorStart") || "0");
+  const assetName = e.dataTransfer.getData("assetName");
+  
+  const rect = e.currentTarget.getBoundingClientRect();
+  const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+  
+  // 1. Calcula o tempo onde o clip "âncora" (o que você clicou) deve cair
+  const rawDropTime = (e.clientX - rect.left + scrollLeft) / pixelsPerSecond;
+  const dropTime = getSnappedTime(rawDropTime, deleteClipId, trackId);
+
+  saveHistory(clips, assets);
+
+  if (isTimelineClip && selectedClipIds.length > 0) {
+    // --- LÓGICA PARA MÚLTIPLOS CLIPS ---
+    
+    // Calculamos o deslocamento (offset) temporal e de track
+    const timeOffset = dropTime - anchorStart;
+    const anchorClip = clips.find(c => c.id === deleteClipId);
+    const trackOffset = anchorClip ? trackId - anchorClip.trackId : 0;
 
     setClips(prev => {
-      const filtered = deleteClipId !== null ? prev.filter(c => c.id !== deleteClipId) : prev;
-      return [...filtered, newClip];
+      // Removemos todos os que estão sendo movidos para reinseri-los
+      const otherClips = prev.filter(c => !selectedClipIds.includes(c.id));
+      
+      const movedClips = prev
+        .filter(c => selectedClipIds.includes(c.id))
+        .map(c => {
+          const targetTrack = Math.max(0, c.trackId + trackOffset);
+
+          // Segurança: Se a track de destino não existe no array de tracks, adicionamos
+          setTracks(currentTracks => {
+            if (!currentTracks.includes(targetTrack)) {
+              return [...currentTracks, targetTrack].sort((a, b) => a - b);
+            }
+            return currentTracks;
+          });
+
+          return {
+            ...c,
+            start: Math.max(0, c.start + timeOffset),
+            trackId: targetTrack
+          };
+        });
+
+      return [...otherClips, ...movedClips];
     });
 
-    setDeleteClipId(null);
-    showNotify("Clip moved", "success");
-  };
+  } else if (!isTimelineClip && assetName) {
+    // --- LÓGICA PARA NOVO CLIP (Vindo da lateral) ---
+    const newClip: Clip = {
+      id: Date.now() + Math.random(),
+      name: assetName,
+      start: dropTime,
+      duration: 40,
+      color: getRandomColor(),
+      trackId: trackId
+    };
+    setClips(prev => [...prev, newClip]);
+  }
 
-
+  setDeleteClipId(null);
+};
   const handleImportFile = async () => {
     const selected = await open({
       multiple: true,
@@ -1464,16 +1696,59 @@ return (
                   {formatTime(playheadPos / pixelsPerSecond)}
                 </span>
               </div>
+
+
+                {/* Dentro da div da Toolbar, junto com Scissors, Snap, etc */}
+                <div className="flex items-center gap-1 border-l border-zinc-800 ml-4 pl-4">
+                  <button 
+                    onClick={() => handleMassSplitAndSelect('left')}
+                    className="flex flex-col items-center gap-0.5 px-2 py-1 rounded hover:bg-zinc-800 group transition-all"
+                    title="Split and Select Left (Ctrl+Q)"
+                  >
+                    <div className="flex items-center text-zinc-500 group-hover:text-blue-400">
+                      <SkipBack size={14} className="mr-[-4px]" />
+                      <Scissors size={12} />
+                    </div>
+                    <span className="text-[8px] font-black text-zinc-600 uppercase">Sel Left</span>
+                  </button>
+
+                  <button 
+                    onClick={() => handleMassSplitAndSelect('right')}
+                    className="flex flex-col items-center gap-0.5 px-2 py-1 rounded hover:bg-zinc-800 group transition-all"
+                    title="Split and Select Right (Ctrl+W)"
+                  >
+                    <div className="flex items-center text-zinc-500 group-hover:text-blue-400">
+                      <Scissors size={12} />
+                      <SkipForward size={14} className="ml-[-4px]" />
+                    </div>
+                    <span className="text-[8px] font-black text-zinc-600 uppercase">Sel Right</span>
+                  </button>
+                </div>
             </div>
           </div>
 
           {/* Timeline Tracks Area */}
+
+          {isBoxSelecting && (
+          <div 
+            className="absolute border border-blue-500 bg-blue-500/20 z-[100] pointer-events-none"
+            style={{
+              left: Math.min(boxStart.x, boxEnd.x),
+              top: Math.min(boxStart.y, boxEnd.y),
+              width: Math.abs(boxEnd.x - boxStart.x),
+              height: Math.abs(boxEnd.y - boxStart.y),
+            }}
+          />
+        )}
           <div 
             ref={timelineContainerRef}
             className="flex-1 overflow-y-auto overflow-x-auto relative bg-[#080808] custom-scrollbar"
-            onMouseDown={(e) => { if (e.target === e.currentTarget) setSelectedClipIds([]); }}
+            onMouseDown={handleTimelineMouseDown} //(e) => { if (e.target === e.currentTarget) setSelectedClipIds([]); 
             onDrop={handleDropOnEmptyArea}
             onDragOver={(e) => e.preventDefault()}
+            onMouseMove={handleTimelineMouseMove}
+            onMouseUp={handleTimelineMouseUp}
+            onMouseLeave={handleTimelineMouseUp}
           >
             {/* Ruler (Always at top of scroll) */}
             <div 
@@ -1498,7 +1773,7 @@ return (
 
             {/* Tracks List */}
             <div className="flex flex-col min-w-[10000px] p-2 gap-1.5">
-              {tracks.map((trackId) => (
+              {tracks.sort((a, b) => a - b).map((trackId) => (
                 <div 
                   key={trackId}
                   onDragOver={(e) => e.preventDefault()}
