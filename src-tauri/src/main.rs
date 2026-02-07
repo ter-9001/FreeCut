@@ -222,6 +222,10 @@ fn delete_project(path: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn rename_file(old_path: String, new_path: String) -> Result<(), String> {
+    fs::rename(old_path, new_path).map_err(|e| e.to_string())
+}
 
 
 fn main() {
@@ -229,7 +233,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init()) // Inicializa o plugin de diálogo
-        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project])
+        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project, rename_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

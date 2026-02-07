@@ -246,6 +246,37 @@ const handleTimelineMouseDown = (e: React.MouseEvent) => {
 };
 
 
+//Function to rename assets
+
+const handleRenameAsset = async (oldName: string, newName: string) => {
+
+  const clip_now = [...clips]
+  const assets_now = [...assets]
+  
+  try {
+    
+  if (!newName || oldName === newName) return;
+
+  setClips(prevClips => prevClips.map(clip => 
+    clip.name === oldName ? { ...clip, name: newName } : clip
+  ));
+
+  setAssets(prevAssets => prevAssets.map(asset => 
+    asset === oldName ? newName : asset
+  ));
+
+  await invoke('rename_file', { oldPath: `${currentProjectPath}/videos/${oldName}`, newPath: `${currentProjectPath}/videos/${newName}` });
+  showNotify("Asset renamed", "success");
+
+  } catch (err) {
+    showNotify("Error renaming physical file", "error");
+    setClips(clip_now)
+    setAssets(assets_now)
+  }
+  
+
+};
+
 //Function to copy and paste clips
 const handleCopy = () => {
   if (selectedClipIds.length === 0) return;
@@ -773,10 +804,20 @@ const handleTimelineMouseUp = () => {
 
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
+
+        //Avoid Write rename asset trigger the delete asset  
+        if (
+        e.target instanceof HTMLInputElement || 
+        e.target instanceof HTMLTextAreaElement || 
+        (e.target as HTMLElement).isContentEditable // Adicione isso aqui!
+      ) {
+        return; 
+      }
+
       if (e.key === 'Delete' || e.key === 'Backspace') {
         handleDeleteEverything();
-    
       }
+      
 
 
         // Undo: Ctrl+Z or Cmd+Z
@@ -800,8 +841,8 @@ const handleTimelineMouseUp = () => {
         }
 
 
-        //S split tool
-        if (e.key.toLowerCase() === 's') {
+        //ALT + S split tool
+        if (e.altKey && e.key.toLowerCase() === 's') {
           e.preventDefault();
           handleSplit();
         }
@@ -1634,7 +1675,26 @@ return (
                     <Play size={10} className={selectedAssets.includes(asset) ? "text-red-500" : "text-zinc-700"} />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-[10px] font-bold text-zinc-300 truncate">{asset}</p>
+                   <p className="text-[10px] font-bold text-zinc-300 truncate outline-none focus:bg-zinc-800 focus:px-1 rounded"
+                      contentEditable
+                      suppressContentEditableWarning={true}
+                      onDoubleClick={(e) => {
+                        // Garante que o texto seja selecionado ao dar duplo clique
+                        e.stopPropagation();
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          (e.target as HTMLElement).blur(); // Dispara o onBlur
+                        }
+                      }}
+                      onBlur={(e) => {
+                        const newName = e.target.innerText.trim();
+                        handleRenameAsset(asset, newName);
+                      }}
+                    >
+                      {asset}
+                    </p>
                     <p className="text-[8px] text-zinc-600 uppercase font-black">Video</p>
                   </div>
                 </motion.div>
@@ -1697,6 +1757,7 @@ return (
                   showNotify(`Snap: ${newState ? 'ON' : 'OFF'}`, "success");
                 }}
                 className={`flex items-center gap-2 text-[10px] font-black uppercase transition-all ${isSnapEnabled ? 'text-red-500' : 'text-zinc-500 hover:text-white'}`}
+                title="Snap (Ctrl + T)"
               >
                 <LayoutGrid size={14} className={isSnapEnabled ? "animate-pulse" : ""} />
                 Snap
