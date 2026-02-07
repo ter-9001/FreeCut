@@ -145,7 +145,7 @@ export default function App() {
   const [boxEnd, setBoxEnd] = useState({ x: 0, y: 0 });
 
 
-  const [clipboard, setClipboard] = useState<Clip[]>([]);
+  const clipboardRef = useRef<Clip[]>([]);
 
 
   useEffect(() => {
@@ -250,60 +250,86 @@ const handleTimelineMouseDown = (e: React.MouseEvent) => {
 const handleCopy = () => {
   if (selectedClipIds.length === 0) return;
   
-  // Filtra os clips selecionados para copiar
   const selectedClips = clips.filter(c => selectedClipIds.includes(c.id));
-  setClipboard(selectedClips);
+  
+  // Atualiza o REF imediatamente (síncrono)
+  clipboardRef.current = selectedClips;
+  
   showNotify(`${selectedClips.length} clips copied`, "success");
 };
 
 const handlePaste = () => {
-  if (clipboard.length === 0) return;
+  // 1. Acessamos o valor via Ref para garantir que pegamos o dado MAIS RECENTE
+  const clipsToPaste = clipboardRef.current;
+  
+  if (clipsToPaste.length === 0) {
+    showNotify("Clipboard is empty", "error");
+    return;
+  }
 
   const playheadTime = playheadPos / pixelsPerSecond;
+  
+  // Salva no histórico antes de alterar
   saveHistory(clips, assets);
 
-  // 1. Encontrar o clip que começa mais cedo no clipboard para usar como referência
-  const minStart = Math.min(...clipboard.map(c => c.start));
+  // 2. Encontramos o ponto inicial do grupo (o clip mais à esquerda no clipboard)
+  const minStart = Math.min(...clipsToPaste.map(c => c.start));
 
-  let newClipsToAdd: Clip[] = [];
-  let currentClipsState = [...clips];
-  let currentTracksState = [...tracks];
+  let newClipsList = [...clips];
+  let currentTracks = [...tracks];
+  const pastedIds: number[] = [];
 
-  // 2. Processar cada clip do clipboard
-  clipboard.forEach(originalClip => {
-    // Calcula o novo tempo (offset relativo à agulha)
+  // 3. Processamos cada clip para colagem
+  clipsToPaste.forEach(originalClip => {
+    // Mantém a distância relativa entre os clips colados em relação à agulha
     const relativeOffset = originalClip.start - minStart;
     const targetStart = playheadTime + relativeOffset;
     
-    // Tentar colar na mesma track original, se não houver espaço, procurar a próxima
     let targetTrack = originalClip.trackId;
-    
-    // Função interna para achar espaço (procura tracks existentes ou cria nova)
-    while (isSpaceOccupiedByState(currentClipsState, targetTrack, targetStart, originalClip.duration)) {
+
+    // 4. Lógica de "Smart Track": Procura espaço ou cria nova track
+    // Verifica se o espaço está ocupado na track atual
+    const isOccupied = (tId: number, start: number, dur: number) => {
+      const end = start + dur;
+      return newClipsList.some(c => 
+        c.trackId === tId && 
+        start < (c.start + c.duration - 0.01) && 
+        end > (c.start + 0.01)
+      );
+    };
+
+    // Se estiver ocupado, desce para a próxima track até achar vazio
+    while (isOccupied(targetTrack, targetStart, originalClip.duration)) {
       targetTrack++;
-      if (!currentTracksState.includes(targetTrack)) {
-        currentTracksState.push(targetTrack);
-        currentTracksState.sort((a, b) => a - b);
+      // Se a track não existe no estado, adicionamos ela
+      if (!currentTracks.includes(targetTrack)) {
+        currentTracks.push(targetTrack);
+        currentTracks.sort((a, b) => a - b);
       }
     }
 
+    // 5. Criação do novo objeto com ID Único robusto
+    const newClipId = Number(Date.now().toString() + Math.floor(Math.random() * 10000).toString());
+    
     const pastedClip: Clip = {
       ...originalClip,
-      id: Date.now() + Math.random(), // Novo ID único
+      id: newClipId,
       start: targetStart,
       trackId: targetTrack
     };
 
-    newClipsToAdd.push(pastedClip);
-    currentClipsState.push(pastedClip);
+    newClipsList.push(pastedClip);
+    pastedIds.push(newClipId);
   });
 
-  setTracks(currentTracksState);
-  setClips(currentClipsState);
+  // 6. Atualiza os estados de uma vez só
+  setTracks(currentTracks);
+  setClips(newClipsList);
   
-  // Opcional: Selecionar os novos clips colados
-  setSelectedClipIds(newClipsToAdd.map(c => c.id));
-  showNotify("Pasted at playhead", "success");
+  // Seleciona os novos clips colados para facilitar o ajuste imediato
+  setSelectedClipIds(pastedIds);
+  
+  showNotify(`Pasted ${clipsToPaste.length} clips`, "success");
 };
 
 // Função auxiliar para verificar espaço sem depender do estado ainda não atualizado
@@ -773,6 +799,8 @@ const handleTimelineMouseUp = () => {
           showNotify(`Magnetic Snap: ${!isSnapEnabled ? 'ON' : 'OFF'}`, "success");
         }
 
+
+        //S split tool
         if (e.key.toLowerCase() === 's') {
           e.preventDefault();
           handleSplit();
@@ -872,10 +900,10 @@ const handleTimelineMouseUp = () => {
      * prevent splitting and warn the user to avoid accidental cuts.
      * 3. Only split without selection if exactly ONE clip is found under the playhead.
      */
- const handleSplit = () => {
-  const playheadTime = playheadPos / PIXELS_PER_SECOND;
+const handleSplit = () => {
+  const playheadTime = playheadPos / pixelsPerSecond;
 
-  // 1. Find ALL clips under the playhead at this moment
+  // 1. Encontrar clips sob a agulha
   const clipsAtPlayhead = clips.filter(c => 
     playheadTime > c.start && 
     playheadTime < (c.start + c.duration)
@@ -883,15 +911,17 @@ const handleTimelineMouseUp = () => {
 
   let targetClip: Clip | undefined;
 
-  // 2. Selection Logic
-  if (selectedClipId !== null) {
-    targetClip = clipsAtPlayhead.find(c => c.id === selectedClipId);
+  // 2. Lógica de Seleção usando o array plural
+  if (selectedClipIds.length > 0) {
+    // Se houver seleção, tenta pegar o que está sob a agulha dentre os selecionados
+    targetClip = clipsAtPlayhead.find(c => selectedClipIds.includes(c.id));
     
     if (!targetClip) {
       showNotify("Selected clip is not under the playhead", "error");
       return;
     }
   } else {
+    // Se nada estiver selecionado, permite o corte apenas se houver EXATAMENTE um clip sob a agulha
     if (clipsAtPlayhead.length > 1) {
       showNotify("Multiple clips found! Select one to split.", "error");
       return;
@@ -903,15 +933,11 @@ const handleTimelineMouseUp = () => {
     targetClip = clipsAtPlayhead[0];
   }
 
-  // 3. CRITICAL: Save history ONLY after all checks pass
-  // This ensures we don't save a history state if the function returns early
   saveHistory(clips, assets);
 
-  // 4. Calculate new segments
   const firstPartDuration = playheadTime - targetClip.start;
   const secondPartDuration = targetClip.duration - firstPartDuration;
 
-  // Create the two new clip pieces
   const firstClip = { ...targetClip, duration: firstPartDuration };
   const secondClip = { 
     ...targetClip, 
@@ -920,14 +946,14 @@ const handleTimelineMouseUp = () => {
     duration: secondPartDuration 
   };
 
-  // 5. Update state
   setClips(prev => [
     ...prev.filter(c => c.id !== targetClip!.id),
     firstClip,
     secondClip
   ]);
 
-  setSelectedClipId(secondClip.id);
+  // Atualiza a seleção para o novo clip criado (parte da direita)
+  setSelectedClipIds([secondClip.id]);
   showNotify("Clip split!", "success");
 };
     //Function to snap
@@ -1427,7 +1453,8 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
           return {
             ...c,
             start: Math.max(0, c.start + timeOffset),
-            trackId: targetTrack
+            trackId: targetTrack,
+            color:  c.trackId != targetTrack ? getRandomColor() : c.color
           };
         });
 
