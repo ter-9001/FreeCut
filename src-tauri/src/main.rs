@@ -18,13 +18,23 @@
 use std::fs;
 use std::path::PathBuf;
 
+use tauri::command;
+use std::process::Command;
+
+
 #[derive(serde::Serialize)]
 struct Project {
     name: String,
     path: String
 }
 
-use std::process::Command;
+
+#[derive(serde::Serialize)]
+pub struct VideoMetadata {
+    duration: f64,
+}
+
+
 
 
 #[tauri::command]
@@ -228,12 +238,69 @@ fn rename_file(old_path: String, new_path: String) -> Result<(), String> {
 }
 
 
+
+
+#[command]
+async fn get_video_metadata(path: String) -> Result<VideoMetadata, String> {
+
+// Comando: ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 path
+
+let output = Command::new("ffprobe")
+
+.args([
+"-v", "error",
+"-show_entries", "format=duration",
+"-of", "default=noprint_wrappers=1:nokey=1",
+
+&path,
+
+])
+
+.output()
+
+.map_err(|e| e.to_string())?;
+
+
+
+let duration_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+let duration = duration_str.parse::<f64>().map_err(|_| "Failed to parse duration")?;
+
+
+
+Ok(VideoMetadata { duration })
+
+}
+
+
+#[command]
+async fn generate_thumbnail(path: String, output_path: String) -> Result<String, String> {
+    // Comando: ffmpeg -i video.mp4 -ss 00:00:01 -vframes 1 output.jpg
+    let status = Command::new("ffmpeg")
+        .args([
+            "-i", &path,
+            "-ss", "00:00:01", // Pega o frame no 1 segundo
+            "-vframes", "1",
+            "-y", // Sobrescrever se já existir
+            &output_path,
+        ])
+        .status()
+        .map_err(|e| e.to_string())?;
+
+    if status.success() {
+        Ok(output_path)
+    } else {
+        Err("FFmpeg failed to generate thumbnail".into())
+    }
+}
+
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init()) // Inicializa o plugin de diálogo
-        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project, rename_file])
+        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project, rename_file, get_video_metadata, generate_thumbnail])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
