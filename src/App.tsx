@@ -43,7 +43,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { track } from 'framer-motion/client';
+import { aside, track } from 'framer-motion/client';
 
 
 
@@ -104,7 +104,7 @@ export default function App() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
   const [clips, setClips] = useState<Clip[]>([]);
-  const [tracks, setTracks] = useState<Tracks[]>([0]);
+  const [tracks, _setTracks] = useState<Tracks[]>([0]);
 
   //deleteClipId is used to store the id of a clip that is changed of track
   const [deleteClipId, setDeleteClipId] = useState<string | null>(null);
@@ -112,7 +112,11 @@ export default function App() {
   const currentProjectPath = localStorage.getItem("current_project_path");
   const timelineRef = useRef<HTMLDivElement>(null);
   const timelineContainerRef = useRef<HTMLDivElement>(null);
+  const asidetrack = useRef<HTMLDivElement>(null);
 
+  const asidetrackwidth = asidetrack.current?.offsetWidth || 192;
+
+  
   const playheadRef = useRef<HTMLDivElement>(null);
 
   const imageExtensions = ['jpg', 'jpeg', 'png', 'webp'];
@@ -173,6 +177,17 @@ export default function App() {
 
   const clipboardRef = useRef<Clip[]>([]);
 
+  // Criamos um Wrapper para o setTracks original
+const setTracks = (newValue: any) => {
+  console.group("%c SET_TRACKS DISPARADO ", "background: #222; color: #bada55; font-weight: bold;");
+  console.log("Novo Valor/Função:", newValue);
+  console.trace("Origem da chamada:"); // Isso vai te dar o arquivo e a linha
+  console.groupEnd();
+
+  // Chama a função original para não quebrar o React
+  _setTracks(newValue);
+};
+
 // Delete clean tracks
 useEffect(() => {
   if (!isSetupOpen) {
@@ -184,11 +199,11 @@ useEffect(() => {
     const filteredTracks = tracks.filter(t => activeTrackIds.includes(t.id));
 
     // 3. Verificamos se houve mudança real (comparando IDs) para evitar loops de render
-    const hasChanged = 
+    const hasChanged__ = 
       filteredTracks.length !== tracks.length || 
       tracks.some((t, i) => filteredTracks[i] && t.id !== filteredTracks[i].id);
 
-    if (hasChanged) {
+    if (hasChanged__) {
       setTracks(filteredTracks);
     }
   }
@@ -227,12 +242,13 @@ useEffect(() => {
     if (projectToDelete) {
       try {
         await invoke('delete_project', { path: projectToDelete.path });
-        showNotify("Project deleted", "success");
-        setProjectToDelete(null);
-        loadProjects(); // Recarrega a lista
         setAssets([])
         setClips([])
         setTracks([])
+        setProjectToDelete(null);
+        loadProjects(); // Recarrega a lista        
+        showNotify("Project deleted", "success");
+
       } catch (e) {
         showNotify("Error deleting project", "error");
       }
@@ -240,10 +256,9 @@ useEffect(() => {
   };
 
 
-    /**
-   * Automatically prunes empty tracks whenever the clips array changes.
-   * This keeps the timeline clean by removing tracks with no content.
-   */
+  //avoid double clips
+
+
 useEffect(() => {
   if (clips.length === 0) return;
 
@@ -279,6 +294,17 @@ useEffect(() => {
 }, [clips]);
 
 
+
+
+
+
+
+
+
+
+
+
+
   // This ref prevents the useEffect from saving history during an Undo/Redo operation
   const isUndoRedoAction = useRef(false);
 
@@ -310,16 +336,16 @@ useEffect(() => {
 
 
       ///code to make the playhead on the same position (time)
-      const pixelsFromLeft = playheadRef.current.offsetLeft;
+      const pixelsFromLeft = playheadRef.current.offsetLeft - asidetrackwidth - 8;
       console.log("Pixels via offsetLeft:", pixelsFromLeft);
 
 
       const variation = newZoom / (prev == 0 ? 1 : prev)
-      console.log("var", prev, factor, variation)
-      console.log(playheadPos, variation)
+      const delta = (newZoom - prev)
+      console.log("var", prev, factor, variation, playheadPos)
+      console.log("delta", delta, factor)
 
-
-      setPlayheadPos( pixelsFromLeft * variation);
+      setPlayheadPos( pixelsFromLeft * variation );
 
       timelineContainerRef.current.scrollLeft = factor < 0 ? 0 : pixelsFromLeft
 
@@ -423,7 +449,6 @@ const handleCopy = () => {
 };
 
 const handlePaste = () => {
-  // 1. Acessamos o valor via Ref para garantir que pegamos o dado MAIS RECENTE
   const clipsToPaste = clipboardRef.current;
   
   if (clipsToPaste.length === 0) {
@@ -431,79 +456,82 @@ const handlePaste = () => {
     return;
   }
 
-  const playheadTime = playheadPos / pixelsPerSecond;
+  // Use this to measure the actual time, better than playheadPos
+
+
+  let now_playheadpos = playheadRef.current?.offsetLeft - asidetrackwidth - 8
+
   
-  // Salva no histórico antes de alterar
+  const playheadTime = now_playheadpos / pixelsPerSecond;
+  
   saveHistory(clips, assets);
 
-  // 2. Encontramos o ponto inicial do grupo (o clip mais à esquerda no clipboard)
+  // 2. Encontramos o ponto de referência (o clipe mais à esquerda do grupo copiado)
   const minStart = Math.min(...clipsToPaste.map(c => c.start));
 
   let newClipsList = [...clips];
-  let currentTracks = [...tracks];
-
-  let currentTracksIds = tracks.map(t => t.id)
+  let updatedTracks = [...tracks];
   const pastedIds: string[] = [];
 
-  // 3. Processamos cada clip para colagem
+  // 3. Processamos a colagem
   clipsToPaste.forEach(originalClip => {
-    // Mantém a distância relativa entre os clips colados em relação à agulha
+    // Calculamos o offset relativo para manter a estrutura do grupo colado
     const relativeOffset = originalClip.start - minStart;
+    
+    // O tempo de destino deve ser rigorosamente Playhead + Offset
     const targetStart = playheadTime + relativeOffset;
     
     let targetTrack = originalClip.trackId;
 
-    // 4. Lógica de "Smart Track": Procura espaço ou cria nova track
-    // Verifica se o espaço está ocupado na track atual
+    // Função de verificação de ocupação melhorada
     const isOccupied = (tId: number, start: number, dur: number) => {
       const end = start + dur;
       return newClipsList.some(c => 
         c.trackId === tId && 
+        // Pequena margem de tolerância (0.01) para evitar falsos positivos
         start < (c.start + c.duration - 0.01) && 
         end > (c.start + 0.01)
       );
     };
 
-    // Se estiver ocupado, desce para a próxima track até achar vazio
+    // 4. Lógica de busca de track: 
+    // Só incrementa se REALMENTE houver algo no mesmo espaço de tempo E na mesma track
     while (isOccupied(targetTrack, targetStart, originalClip.duration)) {
       targetTrack++;
-      // Se a track não existe no estado, adicionamos ela
-      if (!currentTracksIds.includes(targetTrack)) {
-        currentTracksIds.push(targetTrack);
-        currentTracksIds.sort((a, b) => a - b);
-      }
     }
 
-    const newClipId = crypto.randomUUID()
-
+    const newClipId = crypto.randomUUID();
     const pastedClip: Clip = {
       ...originalClip,
       id: newClipId,
-      start: targetStart,
+      start: targetStart, // Aplica o tempo correto aqui
       trackId: targetTrack
     };
 
-    let type = knowTypeByAssetName(pastedClip.name, true)
-    
-
-
-
-    currentTracks.push({id: targetTrack, type: type  as 'video' | 'audio' | 'effects'})
+    // 5. Garante que a track existe
+    if (!updatedTracks.some(t => t.id === targetTrack)) {
+      const clipType = knowTypeByAssetName(pastedClip.name, true);
+      updatedTracks.push({
+        id: targetTrack,
+        type: clipType as 'video' | 'audio' | 'effects'
+      });
+    }
 
     newClipsList.push(pastedClip);
     pastedIds.push(newClipId);
   });
 
+  // 6. Ordenação final para manter a UI organizada
+  const sortedTracks = updatedTracks.sort((a, b) => {
+    const priority = (type: string) => (type === 'audio' ? 1 : 0);
+    return priority(a.type) - priority(b.type) || a.id - b.id;
+  });
 
-
-  // 6. Atualiza os estados de uma vez só
-  setTracks(currentTracks);
+  setTracks(sortedTracks);
   setClips(newClipsList);
-  
-  // Seleciona os novos clips colados para facilitar o ajuste imediato
   setSelectedClipIds(pastedIds);
   
-  showNotify(`Pasted ${clipsToPaste.length} clips`, "success");
+  showNotify(`Pasted ${clipsToPaste.length} clips at playhead`, "success");
 };
 
 
@@ -524,21 +552,49 @@ const handleTimelineMouseMove = (e: React.MouseEvent) => {
 
   // Detetar clips dentro do retângulo
   const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+
+  
+  //Organize tracks as the are in the render to know its order
+  const tracksid = tracks.sort(
+
+            (a, b) => {
+    // Definimos pesos: Video/Effects = 0 (topo), Audio = 1 (baixo)
+    const priority = (type: string) => (type === 'audio' ? 1 : 0);
+
+    const pA = priority(a.type);
+    const pB = priority(b.type);
+
+    if (pA !== pB) {
+      return pA - pB; // Se os tipos forem diferentes, ordena pelo peso
+    }
+    return a.id - b.id; // Se o tipo for igual, ordena pelo ID original
+  }).map((track) => ( track.id)) 
+
+
   
   const collidingClips = clips.filter(clip => {
-    const clipLeft = (clip.start * pixelsPerSecond) - scrollLeft;
+
+
+    const indexofTrack = tracksid.indexOf(clip.trackId)
+
+    const clipLeft = 200 + (clip.start * pixelsPerSecond) - scrollLeft ;
     const clipRight = clipLeft + (clip.duration * pixelsPerSecond);
-    const clipTop = (clip.trackId * 64) + 30; // 64px altura track + margem ruler
+    const clipTop = ( (indexofTrack+1) * 64) + 30; // 64px altura track + margem ruler
     const clipBottom = clipTop + 60;
 
+    
     return (
       clipRight > left &&
       clipLeft < right &&
       clipBottom > top &&
       clipTop < bottom
     );
+
+
+
   }).map(c => c.id);
 
+  
   setSelectedClipIds(collidingClips);
 };
 
@@ -1072,24 +1128,6 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
       setPlayheadPos(Math.max(0, newX));
     };
 
-    /**
-     * Handles the mouse down event on the ruler to start dragging the playhead
-     */
-    const handlePlayheadDrag = (e: React.MouseEvent) => {
-      seekTo(e.clientX);
-
-      const onMouseMove = (moveEvent: MouseEvent) => {
-        seekTo(moveEvent.clientX);
-      };
-
-      const onMouseUp = () => {
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
-      };
-
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-    };
 
     /**
      * Splits the selected clip (or clip under playhead) into two parts
@@ -1278,11 +1316,75 @@ const handleSplit = () => {
 
 //avoid clip over another
 
+/*
+useEffect(() => {
+  if (clips.length === 0) return;
+
+  // 1. Identifica quais clipes precisamos validar:
+  // Se houver selecionados, validamos eles. Se não, validamos apenas o último adicionado.
+  const idsToValidate = selectedClipIds.length > 0 
+    ? selectedClipIds 
+    : [clips[clips.length - 1].id];
+
+  let hasChanges = false;
+  let newClips = [...clips];
+  let newTracks = [...tracks];
+
+  // 2. Processamos cada clipe da lista de validação
+  idsToValidate.forEach(id => {
+    const clipIndex = newClips.findIndex(c => c.id === id);
+    if (clipIndex === -1) return;
+
+    const clip = newClips[clipIndex];
+    const assetType = knowTypeByAssetName(clip.name, true);
+    
+    // Normalização de tipo (audio asset -> audio track)
+    const requiredType = assetType === 'audio' ? 'audio' : (assetType === 'image' ? 'video' : assetType);
+
+    let currentTrackId = clip.trackId;
+    let currentTrack = newTracks.find(t => t.id === currentTrackId);
+
+    // 3. Loop de colisão e compatibilidade
+    // Importante: isSpaceOccupied deve checar contra o novo estado 'newClips'
+    while (isSpaceOccupied(currentTrackId, clip.start, clip.duration, clip.id) || (currentTrack && currentTrack.type !== requiredType)) {
+      currentTrackId++;
+      currentTrack = newTracks.find(t => t.id === currentTrackId);
+
+      // Se a track não existe, criamos ela virtualmente para o loop continuar
+      if (!currentTrack) {
+        const newTask = { id: currentTrackId, type: requiredType as 'video' | 'audio' | 'effects' };
+        newTracks.push(newTask);
+        currentTrack = newTask;
+        hasChanges = true;
+      }
+    }
+
+    // Se o ID da track mudou, atualizamos no nosso array temporário
+    if (currentTrackId !== clip.trackId) {
+      newClips[clipIndex] = { ...clip, trackId: currentTrackId };
+      hasChanges = true;
+    }
+  });
+
+  // 4. Aplicação atômica do estado
+  if (hasChanges) {
+    // Ordenação para manter a lógica visual (Video topo, Audio baixo)
+    setTracks(newTracks.sort((a, b) => {
+      const priority = (t: string) => (t === 'audio' ? 1 : 0);
+      return priority(a.type) - priority(b.type) || a.id - b.id;
+    }));
+    setClips(newClips);
+  }
+}, [clips.length, selectedClipIds]); */
+
+// Usamos clips.length para disparar na criação e selectedClipIds para disparar no movimento
+
+/*
 useEffect(() => {
   if (clips.length === 0) return;
 
   const lastClip = clips[clips.length - 1];
-  const lastClipType = knowTypeByAssetName(lastClip.name,true)
+  const lastClipType = knowTypeByAssetName(lastClip.name, true)
 
   let currentTrackId = lastClip.trackId;
   let currentTrack = tracks.find( t => t.id === currentTrackId) 
@@ -1316,7 +1418,82 @@ useEffect(() => {
       
       console.log(`Clip "${lastClip.name}" movido para Track ${currentTrackId} por colisão ou incompatibilidade de tipo, seu tipo é ${lastClipType}.`);
   }
-}, clips); // Importante: monitorar apenas o .length para evitar loop infinito ao mudar o trackId    
+}, [clips]); // Importante: monitorar apenas o .length para evitar loop infinito ao mudar o trackId    
+
+*/
+
+
+
+
+/*
+useEffect(() => {
+  if (clips.length === 0) return;
+
+  let hasChanged = false;
+  let tempClips = [...clips];
+  let tempTracks = [...tracks];
+
+  // Percorremos todos os clips para garantir integridade total
+  tempClips = tempClips.map((currentClip) => {
+    const clipType = knowTypeByAssetName(currentClip.name, true);
+    // Mapeia 'audio' do asset para 'music' ou 'audio' da track conforme sua interface
+    const requiredTrackType = clipType === 'audio' ? 'audio' : 
+                             (clipType === 'image' ? 'video' : clipType);
+
+    let targetTrackId = currentClip.trackId;
+    let finalTrackId = targetTrackId;
+
+    // Loop de busca de track válida para este clip específico
+    while (true) {
+      const targetTrack = tempTracks.find(t => t.id === finalTrackId);
+      
+      // Verifica colisão: passamos o tempClips para o isSpaceOccupied 
+      // (se sua função permitir) ou verificamos contra os clips já processados
+      const collision = isSpaceOccupied(finalTrackId, currentClip.start, currentClip.duration, currentClip.id);
+      
+      const typeMismatch = targetTrack && targetTrack.type !== requiredTrackType;
+
+      if (!collision && !typeMismatch) {
+        // Se a track não existe, criamos ela virtualmente para o próximo clip saber que ela existe
+        if (!targetTrack) {
+          tempTracks.push({ 
+            id: finalTrackId, 
+            type: requiredTrackType as 'video' | 'audio' | 'effects' 
+          });
+          hasChanged = true;
+        }
+        break; 
+      }
+
+      // Se deu erro, pula para a próxima track
+      finalTrackId++;
+    }
+
+    if (finalTrackId !== currentClip.trackId) {
+      hasChanged = true;
+      return { ...currentClip, trackId: finalTrackId };
+    }
+
+    return currentClip;
+  });
+
+  if (hasChanged) {
+    // Ordenamos as tracks para manter a lógica visual (Video/Effects topo, Audio baixo)
+    setTracks(tempTracks.sort((a, b) => {
+      const priority = (t: string) => (t === 'audio' ? 1 : 0);
+      return priority(a.type) - priority(b.type) || a.id - b.id;
+    }));
+    
+    setClips(tempClips);
+  }
+}, [clips]); // Monitorar length evita loops infinitos de movimentação
+*/
+
+
+
+
+
+
 
 
 const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) => 
@@ -1350,7 +1527,175 @@ const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) =>
 
 }
 
+
+const createClipOnNewTrack_ai2 = (assetName: string, dropTime: number) => {
+  const type = knowTypeByAssetName(assetName, true);
+  const refAsset = assets.find(a => a.name === assetName);
+  const deleteClip = clips.find(c => c.id === deleteClipId);
+
+  // 1. Calculamos o ID da nova track
+  const newTrackId = tracks.length > 0 ? Math.max(...tracks.map(t => t.id)) + 1 : 0;
+
+  // 2. Criamos o objeto do novo clipe
+  const newClip: Clip = {
+    id: crypto.randomUUID(),
+    name: assetName,
+    start: dropTime,
+    duration: deleteClip ? deleteClip.duration : 10,
+    color: getRandomColor(),
+    trackId: newTrackId,
+    maxduration: refAsset && refAsset.type !== 'image' ? refAsset.duration : 10,
+    beginmoment: deleteClip ? deleteClip.beginmoment : 0
+  };
+
+  // 3. Atualizamos as tracks primeiro
+  setTracks(prev => {
+    const updated = [...prev, { id: newTrackId, type: type as any }];
+    // Ordenação consistente (Video -> Audio)
+    return updated.sort((a, b) => {
+      const priority = (t: string) => (t === 'audio' ? 1 : 0);
+      return priority(a.type) - priority(b.type) || a.id - b.id;
+    });
+  });
+
+  // 4. Atualizamos os clipes
+  setClips(prevClips => {
+    const filtered = deleteClipId 
+      ? prevClips.filter(c => c.id !== deleteClipId) 
+      : prevClips;
+    return [...filtered, newClip];
+  });
+
+  setDeleteClipId(null);
+  showNotify("Track and clip created", "success");
+};
+
 const createClipOnNewTrack = (assetName: string, dropTime: number) => {
+    
+  
+    
+    setTracks(prev => 
+      {
+  
+          const newTrackId = prev.length > 0 ? Math.max(...prev.map(t => t.id)) + 1 : 0; 
+   
+          console.log('new id track', newTrackId)
+
+          const type = knowTypeByAssetName(assetName, true);
+
+          const updatedTracks = [...prev, { 
+            id: newTrackId, 
+            type: type as 'video' | 'audio' | 'effects' 
+          }];
+
+          const refAsset = assets.find(a => a.name === assetName);
+          const deleteClip = clips.find(c => c.id === deleteClipId);
+
+          const newClip: Clip = {
+            id: crypto.randomUUID(),
+            name: assetName,
+            start: dropTime,
+            duration: deleteClip ? deleteClip.duration : 10,
+            color: getRandomColor(),
+            trackId: newTrackId,
+            maxduration: refAsset && refAsset.type !== 'image' ? refAsset.duration : 10,
+            beginmoment: deleteClip ? deleteClip.beginmoment : 0
+          };
+
+
+          setClips(prevClips => {
+            const filtered = deleteClipId !== null 
+              ? prevClips.filter(c => c.id !== deleteClipId) 
+              : prevClips;
+            return [...filtered, newClip];
+          });
+
+          return updatedTracks
+
+
+
+
+
+
+
+
+
+
+      }
+
+
+    )
+
+
+
+}
+
+
+const createClipOnNewTrack_ai = (assetName: string, dropTime: number) => {
+
+  console.log('new track')
+  console.trace()
+
+  const trackids = tracks.map(t => t.id);
+  
+  const newTrackId = tracks.length > 0 ? Math.max(...trackids) + 1 : 0; 
+   
+  console.log('new id track', newTrackId)
+
+  const type = knowTypeByAssetName(assetName, true);
+  
+  const refAsset = assets.find(a => a.name === assetName);
+  const deleteClip = clips.find(c => c.id === deleteClipId);
+
+  const newClip: Clip = {
+    id: crypto.randomUUID(),
+    name: assetName,
+    start: dropTime,
+    duration: deleteClip ? deleteClip.duration : 10,
+    color: getRandomColor(),
+    trackId: newTrackId,
+    maxduration: refAsset && refAsset.type !== 'image' ? refAsset.duration : 10,
+    beginmoment: deleteClip ? deleteClip.beginmoment : 0
+  };
+  
+  console.log('old tracks', track)
+  console.log('new clip', newClip)
+
+  // ATUALIZAÇÃO ATÔMICA
+  // Primeiro as tracks
+  console.log('new tracks', setTracks(prevTracks__ => {
+    //if (prevTracks.some(t => t.id === newTrackId)) return prevTracks;
+  
+    const prevTracks = prevTracks__.filter( t => t.id !== newTrackId)
+    
+    const updatedTracks = [...prevTracks, { 
+      id: newTrackId, 
+      type: type as 'video' | 'audio' | 'effects' 
+    }];
+    
+    // IMPORTANTE: Use a mesma lógica de ordenação de tipo que usamos na Timeline
+    return updatedTracks.sort((a, b) => {
+      const priority = (t: string) => (t === 'audio' ? 1 : 0);
+      return priority(a.type) - priority(b.type) || a.id - b.id;
+    });
+  }))
+
+
+
+
+  // Depois os clips
+  setClips(prevClips => {
+    const filtered = deleteClipId !== null 
+      ? prevClips.filter(c => c.id !== deleteClipId) 
+      : prevClips;
+    return [...filtered, newClip];
+  });
+
+  setDeleteClipId(null);
+  showNotify("New track created", "success");
+};
+
+const createClipOnNewTrack_old = (assetName: string, dropTime: number) => {
   
   
   //Higher Track more one
@@ -1415,6 +1760,8 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   e.preventDefault();
   e.stopPropagation();
 
+  console.log('entrou no empty')
+
   if (e.dataTransfer.files.length > 0) return;
 
   const assetName = e.dataTransfer.getData("assetName");
@@ -1424,7 +1771,7 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
   
   const relativeY = e.clientY - container.top;
-  const x = e.clientX - container.left + scrollLeft;
+  const x = e.clientX - container.left + scrollLeft + 200;
 
   //last term to calibrate with  zoom
   const dropTime = Math.max(0, x / PIXELS_PER_SECOND) * (2/pixelsPerSecond);
@@ -1434,13 +1781,17 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   const margin = 20;
 
   // Se soltar acima ou abaixo, a função centralizada resolve
+  
   if (relativeY < -margin) {
     createClipOnNewTrack(assetName, dropTime);
+    
   } else if (relativeY > totalTracksHeight + margin) {
     createClipOnNewTrack(assetName, dropTime);
+    
+
   }
 
-
+  
 
 
 };
@@ -1448,6 +1799,8 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   // Function to lead with Drag direct from OS
 const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number) => {
   if (!currentProjectPath) return;
+
+  console.log('nativedrop')
 
   const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
   if (!timelineBounds) return;
@@ -1493,11 +1846,31 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       const relativeY = mouseY - timelineBounds.top;
       const targetTrackIndex = Math.floor(relativeY / TRACK_HEIGHT);
 
+      //Organize tracks as the are in the render to know its order
+      const tracks_order= tracks.sort(
+
+                (a, b) => {
+        // Definimos pesos: Video/Effects = 0 (topo), Audio = 1 (baixo)
+        const priority = (type: string) => (type === 'audio' ? 1 : 0);
+
+        const pA = priority(a.type);
+        const pB = priority(b.type);
+
+        if (pA !== pB) {
+          return pA - pB; // Se os tipos forem diferentes, ordena pelo peso
+        }
+        return a.id - b.id; // Se o tipo for igual, ordena pelo ID original
+      }).map((track) => ( track)) 
+
+
+
       // Se soltar abaixo da última track existente, cria uma nova
 
 
-      const isBusy = (isSpaceOccupied(targetTrackIndex, dropTime, Math.min(duration, 10), null))
-      const isNotType = tracks[targetTrackIndex].type !== knowTypeByAssetName(fileName,true)
+      const isBusy = (isSpaceOccupied(tracks_order[targetTrackIndex].id, dropTime, Math.min(duration, 10), null))
+      const isNotType = tracks_order[targetTrackIndex].type !== knowTypeByAssetName(fileName,true)
+
+      console.log('empty var', tracks_order[targetTrackIndex], isBusy, isNotType, targetTrackIndex >= tracks.length , targetTrackIndex)
 
       if ((targetTrackIndex >= tracks.length || targetTrackIndex < 0) ||  isBusy  || isNotType) {
         await loadAssets();
@@ -1506,9 +1879,8 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       } else {
         
          // Drop em track existente
-          const targetTrackId = tracks[targetTrackIndex].id;
-          await new Promise(resolve => setTimeout(resolve, 1));
-
+          const targetTrackId = tracks_order[targetTrackIndex].id;
+          
           setClips(prev => [...prev, {
             id: crypto.randomUUID() ,
             name: fileName,
@@ -1746,36 +2118,7 @@ const openProject = async (path: string) => {
 };
 
 
-  // --- TAURI V2 NATIVE DRAG & DROP LISTENER FOR FILES FROM OS (NOT ASSETS) ---
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-
-    const setupDropListener = async () => {
-      // Armazena a função de desinscrição retornada pela Promise
-      const unsubscribe = await getCurrentWindow().onDragDropEvent((event) => {
-        if (event.payload.type === 'drop') {
-          const { paths, position } = event.payload;
-          const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
-          const isTimelineZone = timelineBounds &&
-            position.y >= timelineBounds.top &&
-            position.y <= timelineBounds.bottom;
-
-          handleNativeDrop(paths, position.x, position.y);
-        }
-      });
-      unlisten = unsubscribe;
-    };
-
-    if (!isSetupOpen) {
-      setupDropListener();
-    }
-
-    return () => {
-      if (unlisten) {
-        unlisten();
-      }
-    };
-  }, [isSetupOpen, currentProjectPath]);
+ 
 
 
 
@@ -1922,8 +2265,10 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
       let targetTrack = Math.max(0, clip.trackId + trackOffset);
       const targetStart = Math.max(0, clip.start + timeOffset);
 
+      const trackChoose = tracks.find( t => t.id === targetTrack)
+
       // Se houver colisão, jogamos para uma track acima das existentes
-      if (isSpaceOccupied(targetTrack, targetStart, clip.duration, clip.id)) {
+      if (isSpaceOccupied(targetTrack, targetStart, clip.duration, clip.id) || trackChoose?.type !==  knowTypeByAssetName(clip.name,true)) {
         maxTrackId++;
         targetTrack = maxTrackId;
       }
@@ -2341,173 +2686,176 @@ return (
             </div>
           </div>
 
-          {/* Timeline Tracks Area */}
 
-          {isBoxSelecting && (
-          <div 
-            className="absolute border border-blue-500 bg-blue-500/20 z-[100] pointer-events-none"
-            style={{
-              left: Math.min(boxStart.x, boxEnd.x),
-              top: Math.min(boxStart.y, boxEnd.y),
-              width: Math.abs(boxEnd.x - boxStart.x),
-              height: Math.abs(boxEnd.y - boxStart.y),
-            }}
-          />
-        )}
-
+         
       
 {/* --- TIMELINE SECTION --- */}
-<div className="flex flex-col bg-[#09090b] rounded-xl border border-white/5 overflow-hidden relative m-4 shadow-2xl">
-  
-  {/* 1. RULER HEADER (Fixed Side + Scrolling Ruler) */}
-  <div className="flex border-b border-white/5 bg-zinc-900/30">
-    {/* Fixed Aside Header */}
-    <div className="w-48 shrink-0 border-r border-white/5 flex items-center px-4 bg-zinc-900/50">
-      <Clock size={12} className="text-zinc-500 mr-2" />
-      <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Timeline</span>
-    </div>
 
-    {/* Scrolling Ruler Area */}
+<div className="flex flex-col bg-black/20 rounded-xl border border-white/5 overflow-hidden relative">
+  
+
+
+
+  {/* Main Timeline Area (Tracks + Needle) */}
+  <div 
+    ref={timelineContainerRef}
+    onMouseDown={handleTimelineMouseDown} //(e) => { if (e.target === e.currentTarget) setSelectedClipIds([]); 
+            onDrop={handleDropOnEmptyArea}
+            onDragOver={(e) => e.preventDefault()}
+            onMouseMove={handleTimelineMouseMove}
+            onMouseUp={handleTimelineMouseUp}
+            onMouseLeave={handleTimelineMouseUp}
+    className="flex flex-col p-2 gap-1.5 overflow-x-auto custom-scrollbar relative"
+  >
+
+     
+
+     {/* Header da Timeline / Ruler */}
+  <div className="flex bg-zinc-900/50">
+    <div className="w-48 shrink-0 border-r border-white/5" /> 
+    
     <div 
-      className="flex-1 relative h-10 cursor-pointer overflow-hidden select-none"
+      className="flex-1 relative h-8 border-b border-white/5 cursor-pointer overflow-hidden"
       onMouseDown={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-        const newPos = e.clientX - rect.left + scrollLeft;
+        const newPos = e.clientX - rect.left + scrollLeft - (pixelsPerSecond/20); //calibration
         setPlayheadPos(newPos);
       }}
-      onMouseMove={(e) => {
-        if (e.buttons === 1) {
-          const rect = e.currentTarget.getBoundingClientRect();
-          const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-          const newPos = Math.max(0, e.clientX - rect.left + scrollLeft);
-          setPlayheadPos(newPos);
-        }
-      }}
+
     >
-      {/* Time Markers */}
-      {[...Array(200)].map((_, i) => {
+      {[...Array(150)].map((_, i) => {
         const timeInSeconds = i * 5;
-        const isMajor = timeInSeconds % 30 === 0;
         return (
-          <div 
-            key={i} 
-            className="absolute h-full border-l border-white/5 pointer-events-none" 
-            style={{ left: timeInSeconds * pixelsPerSecond }}
-          >
-            <div className={`h-2 border-l ${isMajor ? 'border-zinc-400' : 'border-zinc-700'}`} />
-            {isMajor && (
-              <span className="text-[8px] text-zinc-500 font-mono ml-1 mt-1 block">
-                {formatTime(timeInSeconds)}
-              </span>
-            )}
+          <div key={i} className="absolute border-l border-zinc-800/50 h-full text-[8px] pl-1 pt-1 text-zinc-500 font-mono pointer-events-none" style={{ left: timeInSeconds * pixelsPerSecond }}>
+            {timeInSeconds % 30 === 0 ? formatTime(timeInSeconds) : ''}
+            <div className="absolute top-0 left-0 h-2 border-l border-zinc-700" />
           </div>
         );
       })}
     </div>
   </div>
 
-  {/* 2. TRACKS CONTENT (Fixed Asides + Scrolling Clips) */}
-  <div className="flex flex-1 overflow-hidden relative">
-    
-    {/* Fixed Column for Track Controls */}
-    <div className="w-48 shrink-0 flex flex-col gap-1.5 p-2 border-r border-white/5 bg-zinc-900/10 z-20">
-      {tracks
-        .sort((a, b) => {
-          const priority = (type: string) => (type === 'audio' ? 1 : 0);
-          return priority(a.type) - priority(b.type) || a.id - b.id;
-        })
-        .map((track) => (
-          <div key={track.id} className="h-16 flex items-center px-3 gap-3 bg-zinc-900/40 border border-zinc-800/40 rounded-md">
-            <div className="w-8 h-8 rounded bg-white/5 flex items-center justify-center text-zinc-400">
-              {track.type === 'audio' && <Music size={14} />}
-              {track.type === 'video' && <Play size={14} fill="currentColor" />}
-              {track.type === 'effects' && <Sparkles size={14} />}
-            </div>
-            <div className="flex flex-col min-w-0">
-              <span className="text-[9px] font-black text-white/70 uppercase truncate">{track.type}</span>
-              <span className="text-[7px] font-bold text-zinc-600 uppercase">Track {track.id + 1}</span>
-            </div>
-          </div>
-        ))}
+    {/* AGULHA (PLAYHEAD) - Agora solta dentro do container de scroll */}
+    <div ref={playheadRef}
+      className="absolute top-0 bottom-0 w-[2px] bg-red-600 z-[100] pointer-events-none transition-transform duration-75 ease-out" 
+      style={{ left: playheadPos + asidetrackwidth  + 8 }} // +8 por causa do padding p-2 do container
+
+    >
+        {/* Cabeça da agulha (Triângulo ou Círculo) */}
+        <div  className="w-4 h-4 bg-red-600 rounded-b-full shadow-[0_0_10px_rgba(220,38,38,0.5)] -ml-[7px]" />
     </div>
 
-    {/* Scrolling Area for Clips and Playhead */}
-    <div 
-      ref={timelineContainerRef}
-      className="flex-1 overflow-x-auto overflow-y-hidden custom-scrollbar relative p-2"
-      style={{ minHeight: '400px' }}
-      onScroll={(e) => {
-        // Se quiseres sincronizar a régua se ela estivesse num div separado, farias aqui
-      }}
-    >
-      {/* THE NEEDLE (PLAYHEAD) - Absolute to the scrolling container */}
-      <div 
-        className="absolute top-0 bottom-0 w-[2px] bg-red-600 z-[100] pointer-events-none" 
-        style={{ left: playheadPos}} // O +8 é apenas para compensar o padding (p-2) do container
-      >
-        <div className="w-4 h-4 bg-red-600 rounded-b-full shadow-[0_0_15px_rgba(220,38,38,0.6)] -ml-[7px]" />
-      </div>
+ 
 
-      {/* Render Tracks Background/Dropzones */}
-      <div className="flex flex-col gap-1.5 min-w-[10000px]">
-        {tracks.map((track) => (
+    {/* Renderização das Tracks (Seu código de sort e map aqui) */}
+    {tracks.sort(
+
+            (a, b) => {
+    // Definimos pesos: Video/Effects = 0 (topo), Audio = 1 (baixo)
+    const priority = (type: string) => (type === 'audio' ? 1 : 0);
+
+    const pA = priority(a.type);
+    const pB = priority(b.type);
+
+    if (pA !== pB) {
+      return pA - pB; // Se os tipos forem diferentes, ordena pelo peso
+    }
+    return a.id - b.id; // Se o tipo for igual, ordena pelo ID original
+  }).map((track) => (
+      <div key={track.id} className="flex gap-2 group">
+        
+        {/* ASIDE: Controles da Track */}
+        <div  ref={asidetrack} className="w-48 shrink-0 bg-zinc-900/40 border border-zinc-800/40 rounded-md flex items-center px-3 gap-3">
+          <div className="w-8 h-8 rounded bg-white/5 flex items-center justify-center text-zinc-400 group-hover:text-white transition-colors">
+            {track.type === 'audio' && <Music size={14} />}
+            {track.type === 'video' && <Play size={14} fill="currentColor" />}
+            {track.type === 'effects' && <Sparkles size={14} />}
+          </div>
+          
+          <div className="flex flex-col min-w-0">
+            <span className="text-[9px] font-black text-white/70 uppercase tracking-tighter truncate">
+              {track.type} Track
+            </span>
+            <span className="text-[7px] font-bold text-zinc-600 uppercase">
+              ID: {track.id + 1}
+            </span>
+          </div>
+        </div>
+
+        {/* ÁREA DE DROPS: Onde os clips ficam */}
+        <div 
+          onDragOver={handleDragOver}
+          onDrop={(e) => handleDropOnTimeline(e, track.id)}
+          className="relative flex-1 bg-zinc-900/10 border border-zinc-800/20 rounded-md hover:bg-zinc-900/20 transition-colors min-w-[10000px]"
+          style={{ height: '64px' }}
+        >
+          {/* Clips filtrados por track.id */}
+          {clips.filter(c => Number(c.trackId) === Number(track.id)).map((clip) => (
+            <motion.div 
+              key={clip.id} layoutId={clip.id}
+              draggable="true"
+              onDragStart={(e) => handleDragStart(e, clip.color, track.id, clip.duration, clip.name, true, clip.id)}
+              onClick={(e) => { e.stopPropagation(); toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey); }}
+              className={`absolute inset-y-1.5 ${clip.color} rounded-md flex items-center shadow-lg cursor-grab active:cursor-grabbing border-2 ${
+                selectedClipIds.includes(clip.id) ? 'border-white ring-4 ring-white/10 z-30' : 'border-black/20'
+              }`}
+              style={{
+                left: clip.start * pixelsPerSecond,
+                width: clip.duration * pixelsPerSecond,
+              }}
+            >
+              <div className="absolute left-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'left')} />
+              <div className="px-3 w-full">
+                <p className="text-[9px] font-black text-white truncate uppercase italic leading-none drop-shadow-md">
+                  {clip.name}
+                </p>
+              </div>
+              <div className="absolute right-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'right')} />
+            </motion.div>
+          ))}
+        </div>
+      </div>
+    ))}
+
+
+       {isBoxSelecting && (
           <div 
-            key={track.id}
-            onDragOver={handleDragOver}
-            onDrop={(e) => handleDropOnTimeline(e, track.id)}
-            className="h-16 relative bg-zinc-900/5 border border-zinc-800/10 rounded-md hover:bg-zinc-900/20 transition-colors"
-          >
-            {/* Clips logic */}
-            {clips
-              .filter(c => c.trackId === track.id)
-              .map((clip) => (
-                <motion.div 
-                  key={clip.id}
-                  draggable="true"
-                  onDragStart={(e) => handleDragStart(e, clip.color, track.id, clip.duration, clip.name, true, clip.id)}
-                  onClick={(e) => { e.stopPropagation(); toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey); }}
-                  className={`absolute inset-y-1.5 ${clip.color} rounded-md flex items-center shadow-lg cursor-grab active:cursor-grabbing border-2 ${
-                    selectedClipIds.includes(clip.id) ? 'border-white ring-4 ring-white/10 z-30' : 'border-black/20'
-                  }`}
-                  style={{
-                    left: clip.start * pixelsPerSecond,
-                    width: clip.duration * pixelsPerSecond,
-                  }}
-                >
-                  <div className="absolute left-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'left')} />
-                  <div className="px-3 w-full overflow-hidden">
-                    <p className="text-[9px] font-black text-white truncate uppercase italic leading-none drop-shadow-md">
-                      {clip.name}
-                    </p>
-                  </div>
-                  <div className="absolute right-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'right')} />
-                </motion.div>
-              ))}
-          </div>
-        ))}
-      </div>
-    </div>
-  </div>
+            className="absolute border border-blue-500 bg-blue-500/20 z-[100] pointer-events-none"
+            style={{
+              zIndex: 9999,
+              left: Math.min(boxStart.x  , boxEnd.x ),
+              top: Math.min(boxStart.y  , boxEnd.y),
+              width: Math.abs(boxEnd.x - boxStart.x),
+              height: Math.abs(boxEnd.y - boxStart.y),
+            }}
+          />
+        )}
 
-  {/* Footer with Add Track and Zoom */}
-  <div className="flex p-2 bg-zinc-900/50 border-t border-white/5 items-center justify-between">
-    <button 
-      onClick={() => setTracks(prev => [...prev, { id: Math.max(...prev.map(t => t.id), -1) + 1, type: 'video' }])}
-      className="flex items-center gap-2 text-[9px] font-black text-zinc-500 hover:text-white uppercase transition-colors px-3 py-1.5 border border-zinc-800 rounded-lg"
-    >
-      <Plus size={12} /> Add Track
-    </button>
 
-    <div className="flex items-center gap-4 px-4">
-       <ZoomOut size={14} className="text-zinc-600 cursor-pointer hover:text-white" onClick={() => setPixelsPerSecond(prev => Math.max(5, prev - 5))} />
-       <div className="w-32 h-1 bg-zinc-800 rounded-full relative">
-          <div className="absolute top-0 left-0 h-full bg-zinc-500 rounded-full" style={{ width: `${(pixelsPerSecond / 100) * 100}%` }} />
-       </div>
-       <ZoomIn size={14} className="text-zinc-600 cursor-pointer hover:text-white" onClick={() => setPixelsPerSecond(prev => Math.min(100, prev + 5))} />
-    </div>
+    
+
+
+      <button 
+        onClick={() => {
+          const nextId = tracks.length > 0 ? Math.max(...tracks.map(t => t.id)) + 1 : 0;
+          setTracks(prev => [...prev, { id: nextId, type: 'video' }]);
+        }}
+        className="mb-[200px] h-8 mt-2 w-fit flex items-center gap-2 text-[9px] font-black text-zinc-700 hover:text-zinc-400 uppercase tracking-widest transition-colors px-3 py-2 border border-dashed border-zinc-800/50 rounded-md"
+        
+      >
+        <Plus size={10} /> Add Track
+      </button>
+
+
+
+       
+
   </div>
-</div>
+</div>  
+
+
+
 
         </footer>
       </div>
