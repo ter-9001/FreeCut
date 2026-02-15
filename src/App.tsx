@@ -37,14 +37,16 @@ import {
   ZoomIn,      // Substituindo SearchPlus
   ZoomOut,
   Music,
-  Sparkles
+  Sparkles,
+  VideoOff,
+  ImageIcon
   
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { aside, track } from 'framer-motion/client';
-
+import { convertFileSrc } from '@tauri-apps/api/core';
 
 
 // --- INTERFACES ---
@@ -78,7 +80,7 @@ interface Asset {
   path: string;       // Caminho completo no sistema
   duration: number;   // Duração real em segundos
   type: 'video' | 'audio' | 'image';
-  thumbnail?: string; // URL da imagem gerada pelo FFmpeg
+  thumbnailUrl?: string; // URL da imagem gerada pelo FFmpeg
 }
 
 interface Tracks
@@ -434,6 +436,51 @@ const handleRenameAsset_old = async (oldName: string, newName: string) => {
   }
   
 
+};
+
+
+const getThumbnail = async (projectPath: string, fileName: string, requestedTime: number) => {
+  // 1. Encontrar o asset para saber o tipo e duração
+  const asset = assets.find(a => a.name === fileName);
+  if (!asset) return null;
+
+  // 2. Regra: Áudio não tem thumbnail
+  if (asset.type === 'audio') {
+    return null; 
+  }
+
+  // 3. Regra: Imagem a thumbnail é a própria imagem
+  if (asset.type === 'image') {
+    console.log('caminho img', asset.path)
+    return asset.path; // Retorna o caminho original
+  }
+
+  // 4. Regra: Ajuste de tempo (se requestedTime > duração, usa tempo 0)
+  let finalTime = requestedTime;
+  if (requestedTime >= asset.duration) {
+    finalTime = 0;
+  }
+
+  try {
+    // 5. Chama o Rust para gerar/buscar a thumbnail
+    const thumbPath = await invoke<string>('generate_thumbnail', {
+      projectPath,
+      fileName,
+      timeSeconds: finalTime
+    });
+
+    // Para exibir no HTML/React vindo do sistema de arquivos, 
+    // você pode precisar do convertFileSrc do Tauri
+    // TRANSFORMANDO O CAMINHO:
+    const safeUrl = convertFileSrc(thumbPath); 
+
+    console.log(safeUrl);
+
+    return safeUrl
+  } catch (error) {
+    console.error("Erro ao gerar thumbnail:", error);
+    return null;
+  }
 };
 
 //Function to copy and paste clips
@@ -1833,6 +1880,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       try
       {
         meta = await invoke<{duration: number}>('get_video_metadata', { path: path });
+        
       }
       catch (err)
       {
@@ -1939,7 +1987,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
     const assetPromises = list.map(async (filename) => {
       const extension = filename.split('.').pop()?.toLowerCase();
       const filePath = `${currentProjectPath}/videos/${filename}`;
-  
+      
       let type: 'video' | 'audio' | 'image' = 'video';
       if (['jpg', 'jpeg', 'png', 'webp'].includes(extension || '')) type = 'image';
       if (['mp3', 'wav', 'ogg'].includes(extension || '')) type = 'audio';
@@ -1955,11 +2003,21 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
         }
       }
 
+      let thumbPath = "";
+      if (type === 'image') {
+        thumbPath = convertFileSrc(filePath);
+      } else if (type === 'video') {
+        thumbPath = await getThumbnail(currentProjectPath, filename, 2);
+      }
+
+      console.log('thpah',thumbPath)
+      
       return {
         name: filename,
         path: filePath,
         duration: duration,
-        type: type
+        type: type,
+        thumbnailUrl: thumbPath
       } as Asset;
     });
 
@@ -2524,52 +2582,64 @@ return (
                 <Plus size={20} className="text-zinc-700 group-hover:text-red-500 transition-colors" />
                 <h2 className="text-[9px] font-black text-zinc-500 uppercase mt-2">Import Media</h2>
               </div>
-              
-              {assets.map((asset, index) => (
-                <motion.div 
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  key={index}
-                  onClick={(e) => toggleAssetSelection(asset, e.shiftKey || e.ctrlKey)}
-                  className={`p-2 rounded-lg flex items-center gap-3 group transition-all cursor-grab active:cursor-grabbing border ${
-                    selectedAssets.includes(asset) ? 'bg-red-500/10 border-red-500' : 'bg-[#151515] border-zinc-800 hover:border-zinc-600'
-                  }`}
-                  draggable="true"
-                  onDragStart={(e) => handleDragStart(e, null, null, null, asset.name, false, null)}
-                >
-                  <div className="w-10 h-7 bg-black rounded flex items-center justify-center">
-                    <Play size={10} className={selectedAssets.includes(asset) ? "text-red-500" : "text-zinc-700"} />
-                  </div>
-                  <div className="flex-1 min-w-0" >
-                    <p className="text-[10px] outline-none font-bold text-zinc-300 truncate" contentEditable
-                      suppressContentEditableWarning={true}
-                      onDoubleClick={(e) => {
-                        // Garante que o texto seja selecionado ao dar duplo clique
-                        e.stopPropagation();
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          (e.target as HTMLElement).blur(); // Dispara o onBlur
-                        }
 
-                        if (e.key === 'Escape') {
-                          // Cancel edit
-                          e.currentTarget.innerText = asset.name;
-                          e.currentTarget.blur();
-                        }
-                      }}
-                      onBlur={(e) => {
-                        const newName = e.target.innerText.trim();
-                        handleRenameAsset(asset.name, newName);
-                      }}
-                      >{asset.name}</p>
-                    <p className="text-[8px] text-zinc-600 uppercase font-black">
-                      {asset.type} • {asset.duration.toFixed(1)}s
-                    </p>
-                  </div>
-                </motion.div>
-              ))}
+              
+              
+  {assets.map((asset, index) => (
+    <motion.div
+      key={asset.path}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.05 }}
+      className="group relative aspect-video bg-[#1a1a1a] rounded-lg overflow-hidden border border-white/5 hover:border-red-600/50 transition-colors cursor-pointer"
+    >
+      {/* Thumbnail */}
+      {
+        asset.type !== 'audio' &&   (<img 
+        src={asset.thumbnailUrl} 
+        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+        alt={asset.name}
+        />)
+      }
+
+
+      {asset.type === 'audio' && (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#121212]">
+          <Music 
+            size={48} 
+            className="text-gray-600 transition-colors duration-300 group-hover:text-red-600" 
+          />
+        </div>
+      )}
+      
+
+      
+
+      {/* Gradient Overlay (Sombra para os textos aparecerem) */}
+      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/40 opacity-100" />
+
+      {/* Badge de Duração (Canto inferior direito) */}
+      {asset.type !== 'image' && (
+        <div className="absolute bottom-2 right-2 bg-black/70 backdrop-blur-md px-1.5 py-0.5 rounded text-[10px] font-mono text-white">
+          {formatTime(asset.duration)}
+        </div>
+      )}
+
+      {/* Ícone de Tipo (Canto superior esquerdo) */}
+      <div className="absolute top-2 left-2 p-1 bg-black/50 backdrop-blur-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
+        {asset.type === 'video' && <Play size={12} className="text-white" />}
+        {asset.type === 'audio' && <Music size={12} className="text-white" />}
+        {asset.type === 'image' && <ImageIcon size={12} className="text-white" />}
+      </div>
+
+      {/* Nome do Arquivo (Apenas no Hover ou sempre embaixo) */}
+      <div className="absolute bottom-2 left-2 right-12 opacity-0 group-hover:opacity-100 transition-opacity">
+        <p className="text-[10px] text-white truncate font-medium drop-shadow-lg">
+          {asset.name}
+        </p>
+      </div>
+    </motion.div>
+  ))}
             </div>
           </aside>
 

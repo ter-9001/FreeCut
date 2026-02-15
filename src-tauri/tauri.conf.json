@@ -16,13 +16,22 @@
     "windows": [
       {
         "title": "FreeCut",
-        "width": 800,
-        "height": 600,
+        "width": 1920,
+        "height": 1080,
         "dragDropEnabled": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+      "default-src": "'self' asset: https://asset.localhost;",
+      "img-src": "'self' asset: https://asset.localhost blob: data:",
+      "script-src": "'self' asset: https://asset.localhost",
+      "style-src": "'self' asset: https://asset.localhost"
+      },
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$HOME/project_test_freecut/**"]
+      }
     }
   },
   "bundle": {
@@ -34,6 +43,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "externalBin": [
+      "bin/ffmpeg"
     ]
+  },
+  "plugins": {
+    "fs": {
+      
+    }
   }
+  
 }

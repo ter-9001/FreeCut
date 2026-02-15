@@ -1,0 +1,10 @@
+{
+  "identifier": "allow-ffmpeg",
+  "description": "Permite executar o sidecar ffmpeg",
+  "commands": [],
+  "scope": {
+    "allow": [
+      { "sidecar": "bin/ffmpeg" }
+    ]
+  }
+}

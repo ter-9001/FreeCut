@@ -34,6 +34,67 @@ pub struct VideoMetadata {
     duration: f64,
 }
 
+use tauri_plugin_shell::ShellExt;
+
+
+#[tauri::command]
+async fn generate_thumbnail(
+    app_handle: tauri::AppHandle,
+    project_path: String,
+    file_name: String,
+    time_seconds: f64
+) -> Result<String, String> {
+    // Caminhos conforme sua estrutura
+    let video_path = PathBuf::from(&project_path).join("videos").join(&file_name);
+    let output_name = format!("{}-{}.png", file_name, time_seconds);
+    let output_path = PathBuf::from(&project_path).join("thumbnails").join(&output_name);
+
+    // Se a thumbnail já existir, não precisa gerar de novo
+    if output_path.exists() {
+        return Ok(output_path.to_string_lossy().into_owned());
+    }
+
+    // Executa o Sidecar FFmpeg
+    // -ss: busca rápida pelo tempo / -i: input / -frames:v 1: tira um print / -q:v 2: qualidade
+    let sidecar_command = app_handle
+        .shell()
+        .sidecar("ffmpeg")
+        .map_err(|e| e.to_string())?
+        .args([
+            "-ss", &time_seconds.to_string(), // Busca o tempo
+            "-i", &video_path.to_string_lossy(), // Input
+            "-frames:v", "1", // Apenas 1 frame
+            "-update", "1",   // ESSENCIAL: Diz que é uma imagem única, não uma sequência
+            "-y",             // Sobrescreve se já existir (opcional, mas evita travamentos)
+            &output_path.to_string_lossy(), // Caminho de saída
+        ]);
+
+    let output = sidecar_command.output().await.map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(output_path.to_string_lossy().into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+    }
+}
+
+#[tauri::command]
+async fn export_video(app_handle: tauri::AppHandle, name: String ,output_path: String, filter_complex: String) -> Result<String, String> {
+    // Busca o binário do ffmpeg que configuramos no sidecar
+
+    let filename = format!("{}.mp4", name);
+    let sidecar_command = app_handle
+        .shell()
+        .sidecar("ffmpeg")
+        .unwrap()
+        .args(["-i",&filename, "-filter_complex", &filter_complex, &output_path]);
+
+    let (mut _rx, mut _child) = sidecar_command
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    Ok("Render Beggin".into())
+}
 
 
 
@@ -272,27 +333,6 @@ Ok(VideoMetadata { duration })
 
 }
 
-
-#[command]
-async fn generate_thumbnail(path: String, output_path: String) -> Result<String, String> {
-    // Comando: ffmpeg -i video.mp4 -ss 00:00:01 -vframes 1 output.jpg
-    let status = Command::new("ffmpeg")
-        .args([
-            "-i", &path,
-            "-ss", "00:00:01", // Pega o frame no 1 segundo
-            "-vframes", "1",
-            "-y", // Sobrescrever se já existir
-            &output_path,
-        ])
-        .status()
-        .map_err(|e| e.to_string())?;
-
-    if status.success() {
-        Ok(output_path)
-    } else {
-        Err("FFmpeg failed to generate thumbnail".into())
-    }
-}
 
 
 fn main() {
