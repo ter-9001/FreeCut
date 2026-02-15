@@ -299,6 +299,26 @@ fn rename_file(old_path: String, new_path: String) -> Result<(), String> {
 }
 
 
+#[tauri::command]
+fn delete_file(path: String) -> Result<(), String> {
+    // Usamos PathBuf para consistência com suas outras funções como 'import_asset'
+    let path_buf = std::path::PathBuf::from(&path);
+
+    // 1. Verificações de segurança
+    if !path_buf.exists() {
+        return Err("File path not found".to_string());
+    }
+
+    if !path_buf.is_file() {
+        return Err("The provided path is not a file".to_string());
+    }
+
+    // 2. Execução da deleção
+    fs::remove_file(path_buf).map_err(|e| format!("Failed to delete file: {}", e))?;
+
+    Ok(())
+}
+
 
 
 #[command]
@@ -340,7 +360,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init()) // Inicializa o plugin de diálogo
-        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project, rename_file, get_video_metadata, generate_thumbnail])
+        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project, rename_file, get_video_metadata, generate_thumbnail, delete_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -39,7 +39,8 @@ import {
   Music,
   Sparkles,
   VideoOff,
-  ImageIcon
+  ImageIcon,
+  Search
   
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -106,7 +107,7 @@ export default function App() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
   const [clips, setClips] = useState<Clip[]>([]);
-  const [tracks, _setTracks] = useState<Tracks[]>([0]);
+  const [tracks, setTracks] = useState<Tracks[]>([0]);
 
   //deleteClipId is used to store the id of a clip that is changed of track
   const [deleteClipId, setDeleteClipId] = useState<string | null>(null);
@@ -158,6 +159,7 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const requestRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
 
   /**
@@ -180,7 +182,8 @@ export default function App() {
   const clipboardRef = useRef<Clip[]>([]);
 
   // Criamos um Wrapper para o setTracks original
-const setTracks = (newValue: any) => {
+  /*
+  const setTracks = (newValue: any) => {
   console.group("%c SET_TRACKS DISPARADO ", "background: #222; color: #bada55; font-weight: bold;");
   console.log("Novo Valor/Função:", newValue);
   console.trace("Origem da chamada:"); // Isso vai te dar o arquivo e a linha
@@ -189,6 +192,8 @@ const setTracks = (newValue: any) => {
   // Chama a função original para não quebrar o React
   _setTracks(newValue);
 };
+
+*/
 
 // Delete clean tracks
 useEffect(() => {
@@ -298,7 +303,36 @@ useEffect(() => {
 
 
 
+//functon to move playhead
 
+const handlePlayheadMouseDown = (e: React.MouseEvent) => {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const movePlayhead = (moveEvent: MouseEvent) => {
+    if (!timelineContainerRef.current) return;
+
+    const rect = timelineContainerRef.current.getBoundingClientRect();
+    const scrollLeft = timelineContainerRef.current.scrollLeft;
+
+    // Calculamos a posição X relativa ao container, somando o scroll
+    // Subtraímos o asidetrackwidth (192 ou similar) e o padding (8) para alinhar com o início das tracks
+    const x = moveEvent.clientX - rect.left + scrollLeft - asidetrackwidth - 8;
+
+    // Definimos a nova posição (não permitindo valores negativos)
+    setPlayheadPos(Math.max(0, x));
+  };
+
+  const stopMoving = () => {
+    document.removeEventListener('mousemove', movePlayhead);
+    document.removeEventListener('mouseup', stopMoving);
+  };
+
+  // Registramos os eventos no documento para que o arraste continue 
+  // mesmo se o mouse sair de cima da agulha
+  document.addEventListener('mousemove', movePlayhead);
+  document.addEventListener('mouseup', stopMoving);
+};
 
 
 
@@ -602,20 +636,7 @@ const handleTimelineMouseMove = (e: React.MouseEvent) => {
 
   
   //Organize tracks as the are in the render to know its order
-  const tracksid = tracks.sort(
-
-            (a, b) => {
-    // Definimos pesos: Video/Effects = 0 (topo), Audio = 1 (baixo)
-    const priority = (type: string) => (type === 'audio' ? 1 : 0);
-
-    const pA = priority(a.type);
-    const pB = priority(b.type);
-
-    if (pA !== pB) {
-      return pA - pB; // Se os tipos forem diferentes, ordena pelo peso
-    }
-    return a.id - b.id; // Se o tipo for igual, ordena pelo ID original
-  }).map((track) => ( track.id)) 
+  const tracksid = order_tracks().map((track) => ( track.id)) 
 
 
   
@@ -1039,7 +1060,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
   };
 
   //delete several clips or assets in one time
-  const handleDeleteEverything = () => {
+  const handleDeleteEverything =  () => {
     // 1. Check if there's anything to delete
     if (selectedClipIds.length === 0 && selectedAssets.length === 0) return;
 
@@ -1059,11 +1080,25 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
       const selectedAssetsNames = selectedAssets.map(sa => sa.name )
       setClips(prev => prev.filter( (c) => !(selectedAssetsNames.includes(c.name))))
 
+      selectedAssets.map( async (a) => {
+          
+          try {
+            await invoke('delete_file', { 
+              path: `${currentProjectPath}/videos/${a.name}`, 
+            });
+            showNotify(`Asset ${a.name} deleted`, "success");
+          } catch (err) {
+            showNotify("Error to delete asset", "error");
+            console.log('err to delete asset: ',err )
+            
+          }
+      })
+
 
       setSelectedAssets([]);
     }
 
-    showNotify("Selection purged", "success");
+    //showNotify("Selection purged", "success");
   };
 
   useEffect(() => {
@@ -1575,48 +1610,6 @@ const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) =>
 }
 
 
-const createClipOnNewTrack_ai2 = (assetName: string, dropTime: number) => {
-  const type = knowTypeByAssetName(assetName, true);
-  const refAsset = assets.find(a => a.name === assetName);
-  const deleteClip = clips.find(c => c.id === deleteClipId);
-
-  // 1. Calculamos o ID da nova track
-  const newTrackId = tracks.length > 0 ? Math.max(...tracks.map(t => t.id)) + 1 : 0;
-
-  // 2. Criamos o objeto do novo clipe
-  const newClip: Clip = {
-    id: crypto.randomUUID(),
-    name: assetName,
-    start: dropTime,
-    duration: deleteClip ? deleteClip.duration : 10,
-    color: getRandomColor(),
-    trackId: newTrackId,
-    maxduration: refAsset && refAsset.type !== 'image' ? refAsset.duration : 10,
-    beginmoment: deleteClip ? deleteClip.beginmoment : 0
-  };
-
-  // 3. Atualizamos as tracks primeiro
-  setTracks(prev => {
-    const updated = [...prev, { id: newTrackId, type: type as any }];
-    // Ordenação consistente (Video -> Audio)
-    return updated.sort((a, b) => {
-      const priority = (t: string) => (t === 'audio' ? 1 : 0);
-      return priority(a.type) - priority(b.type) || a.id - b.id;
-    });
-  });
-
-  // 4. Atualizamos os clipes
-  setClips(prevClips => {
-    const filtered = deleteClipId 
-      ? prevClips.filter(c => c.id !== deleteClipId) 
-      : prevClips;
-    return [...filtered, newClip];
-  });
-
-  setDeleteClipId(null);
-  showNotify("Track and clip created", "success");
-};
-
 const createClipOnNewTrack = (assetName: string, dropTime: number) => {
     
   
@@ -1677,138 +1670,12 @@ const createClipOnNewTrack = (assetName: string, dropTime: number) => {
 
 }
 
-
-const createClipOnNewTrack_ai = (assetName: string, dropTime: number) => {
-
-  console.log('new track')
-  console.trace()
-
-  const trackids = tracks.map(t => t.id);
-  
-  const newTrackId = tracks.length > 0 ? Math.max(...trackids) + 1 : 0; 
-   
-  console.log('new id track', newTrackId)
-
-  const type = knowTypeByAssetName(assetName, true);
-  
-  const refAsset = assets.find(a => a.name === assetName);
-  const deleteClip = clips.find(c => c.id === deleteClipId);
-
-  const newClip: Clip = {
-    id: crypto.randomUUID(),
-    name: assetName,
-    start: dropTime,
-    duration: deleteClip ? deleteClip.duration : 10,
-    color: getRandomColor(),
-    trackId: newTrackId,
-    maxduration: refAsset && refAsset.type !== 'image' ? refAsset.duration : 10,
-    beginmoment: deleteClip ? deleteClip.beginmoment : 0
-  };
-  
-  console.log('old tracks', track)
-  console.log('new clip', newClip)
-
-  // ATUALIZAÇÃO ATÔMICA
-  // Primeiro as tracks
-  console.log('new tracks', setTracks(prevTracks__ => {
-    //if (prevTracks.some(t => t.id === newTrackId)) return prevTracks;
-  
-    const prevTracks = prevTracks__.filter( t => t.id !== newTrackId)
-    
-    const updatedTracks = [...prevTracks, { 
-      id: newTrackId, 
-      type: type as 'video' | 'audio' | 'effects' 
-    }];
-    
-    // IMPORTANTE: Use a mesma lógica de ordenação de tipo que usamos na Timeline
-    return updatedTracks.sort((a, b) => {
-      const priority = (t: string) => (t === 'audio' ? 1 : 0);
-      return priority(a.type) - priority(b.type) || a.id - b.id;
-    });
-  }))
-
-
-
-
-  // Depois os clips
-  setClips(prevClips => {
-    const filtered = deleteClipId !== null 
-      ? prevClips.filter(c => c.id !== deleteClipId) 
-      : prevClips;
-    return [...filtered, newClip];
-  });
-
-  setDeleteClipId(null);
-  showNotify("New track created", "success");
-};
-
-const createClipOnNewTrack_old = (assetName: string, dropTime: number) => {
-  
-  
-  //Higher Track more one
-  const trackids = tracks.map(t => t.id) 
-  const newTrackId = tracks.length > 0 ? Math.max(...trackids) + 1 : 0;
-  const type = knowTypeByAssetName(assetName, true)
-  
-
-  
-  // 2. Update Tracks with Sanitization (New Logic)
-  setTracks( prevTracks => {
-    // Check if the track ID already exists to avoid duplicates
-    const exists = prevTracks.some(t => t.id === newTrackId);
-    
-    if (exists) return prevTracks;
-
-    // Add the new track object and keep the list sorted by ID
-    const updatedTracks = [...prevTracks, { id: newTrackId, type: type as 'video' | 'audio' | 'effects' }];
-    
-    return updatedTracks.sort((a, b) => a.id - b.id);
-  });
-  
-  var refAsset = assets.find( a => a.name == assetName );
-
-  var deleteClip = clips.find( c => c.id == deleteClipId)
-
-  //var duration = refAsset && refAsset.duration >= 10  ? 10 : refAsset.duration
-
-  //refAsset && refAsset.type != 'image' ? refAsset.duration : 10
-  
-  
-
-  // 3. Criar o Clip usando o ID que acabamos de gerar (newTrackId)
-  const newClip: Clip = {
-    id: crypto.randomUUID(),
-    name: assetName,
-    start: dropTime,
-    duration: deleteClip ? deleteClip.duration :  10 ,
-    color: getRandomColor(),
-    trackId: newTrackId,
-    maxduration: refAsset && refAsset.type != 'image' ? refAsset.duration : 10,
-    beginmoment: deleteClip ? deleteClip.beginmoment : 0
-  };
-
-  setClips(prevClips => {
-    const filtered = deleteClipId !== null 
-      ? prevClips.filter(c => c.id !== deleteClipId) 
-      : prevClips;
-    return [...filtered, newClip];
-  });
-
-  setDeleteClipId(null);
-  showNotify("New track created", "success");
-  
-};
-
-
-
-
 //create new timelines dropping assets close of a track
 const handleDropOnEmptyArea = (e: React.DragEvent) => {
   e.preventDefault();
   e.stopPropagation();
 
-  console.log('entrou no empty')
-
+  
   if (e.dataTransfer.files.length > 0) return;
 
   const assetName = e.dataTransfer.getData("assetName");
@@ -1842,6 +1709,39 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
 
 
 };
+
+
+//function to return order track as the are in the render ui
+const order_tracks = () => 
+{
+
+  const activeTracksId =  [...new Set(clips.map(c => c.trackId))];
+
+  const tracks_order= tracks.filter(t => activeTracksId.includes(t.id)).sort(
+
+                (a, b) => {
+        // Definimos pesos: Video/Effects = 0 (topo), Audio = 1 (baixo)
+        const priority = (type: string) => (type === 'audio' ? 1 : 0);
+
+        const pA = priority(a.type);
+        const pB = priority(b.type);
+
+        if (pA !== pB) {
+          return pA - pB; // Se os tipos forem diferentes, ordena pelo peso
+        }
+        return a.id - b.id; // Se o tipo for igual, ordena pelo ID original
+      })
+
+
+      console.log('order trakcs', tracks_order)
+
+      return tracks_order
+
+
+
+
+
+}
 
   // Function to lead with Drag direct from OS
 const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number) => {
@@ -1895,20 +1795,8 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       const targetTrackIndex = Math.floor(relativeY / TRACK_HEIGHT);
 
       //Organize tracks as the are in the render to know its order
-      const tracks_order= tracks.sort(
+      const tracks_order= order_tracks()
 
-                (a, b) => {
-        // Definimos pesos: Video/Effects = 0 (topo), Audio = 1 (baixo)
-        const priority = (type: string) => (type === 'audio' ? 1 : 0);
-
-        const pA = priority(a.type);
-        const pB = priority(b.type);
-
-        if (pA !== pB) {
-          return pA - pB; // Se os tipos forem diferentes, ordena pelo peso
-        }
-        return a.id - b.id; // Se o tipo for igual, ordena pelo ID original
-      }).map((track) => ( track)) 
 
 
 
@@ -1918,13 +1806,18 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       const isBusy = (isSpaceOccupied(tracks_order[targetTrackIndex].id, dropTime, Math.min(duration, 10), null))
       const isNotType = tracks_order[targetTrackIndex].type !== knowTypeByAssetName(fileName,true)
 
-      console.log('empty var', tracks_order[targetTrackIndex], isBusy, isNotType, targetTrackIndex >= tracks.length , targetTrackIndex)
+      //console.log('empty var', tracks_order[targetTrackIndex], isBusy, isNotType, targetTrackIndex >= tracks.length , targetTrackIndex)
 
       if ((targetTrackIndex >= tracks.length || targetTrackIndex < 0) ||  isBusy  || isNotType) {
         await loadAssets();
         createClipOnNewTrack(fileName, dropTime)
         return
       } else {
+
+          console.log('teste')
+          await loadAssets();
+
+          
         
          // Drop em track existente
           const targetTrackId = tracks_order[targetTrackIndex].id;
@@ -1939,6 +1832,10 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
             maxduration: duration ? duration : 10,
             beginmoment: 0
           }]);
+
+
+          setTracks( prev =>[... prev, {id: targetTrackId, type: knowTypeByAssetName(fileName, true)}]
+          )
         
 
 
@@ -1948,7 +1845,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       console.error("Native Import Error:", err);
     }
   }
-  loadAssets();
+  //loadAssets();
 };
 
   useEffect(() => {
@@ -2360,7 +2257,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     });
   }
 } else {
-    // Lógica para NOVO clip (Asset -> Timeline) - permanece igual
+    // (Asset -> Timeline) 
     const assetName = e.dataTransfer.getData("assetName");
     //if no have space useeffect with comment 'avoid clip over another'
     // 1. Tenta encontrar o asset correspondente
@@ -2371,27 +2268,43 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     const defaultDuration = assetNow ? Math.min(assetNow.duration, 10) : 10;
     const totalMaxDuration = assetNow ? assetNow.duration : 10;
 
+    const isBusy = (isSpaceOccupied(trackId, dropTime, Math.min(defaultDuration, 10), null))
+    const isNotType = tracks.find( t => t.id === trackId)?.type !== knowTypeByAssetName(assetName,true)
 
-    const newClip: Clip = {
-      id: crypto.randomUUID(), // ID mais seguro
-      name: assetName,
-      start: dropTime,
-      duration: defaultDuration,
-      color: getRandomColor(),
-      trackId: trackId,
-      maxduration: totalMaxDuration,
-      beginmoment: 0
-    };
 
-    setClips(prev => [...prev, newClip]);
-    setDeleteClipId(null);
+
+    if(!isBusy || !isNotType)
+    {
+       const newClip: Clip = {
+          id: crypto.randomUUID(), // ID mais seguro
+          name: assetName,
+          start: dropTime,
+          duration: defaultDuration,
+          color: getRandomColor(),
+          trackId: trackId,
+          maxduration: totalMaxDuration,
+          beginmoment: 0
+        };
+
+        setClips(prev => [...prev, newClip]);
+        setDeleteClipId(null);
+    }
+    else
+    {
+        createClipOnNewTrack(assetName, dropTime)
+        return
+
+    }
   }
 
   setDeleteClipId(null);
 };
 
 
-
+const filteredAssets = assets.filter(asset => 
+  asset.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+  asset.type.toLowerCase().includes(searchQuery.toLowerCase())
+);
 
 
 
@@ -2583,63 +2496,133 @@ return (
                 <h2 className="text-[9px] font-black text-zinc-500 uppercase mt-2">Import Media</h2>
               </div>
 
+
+
+
+              {/* Search Bar Container */}
+              <div className="relative mb-6 group">
+                {/* Ícone de Lupa */}
+                <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
+                  <Search 
+                    size={16} 
+                    className={`transition-colors duration-300 ${
+                      searchQuery ? 'text-red-500' : 'text-zinc-500 group-focus-within:text-red-400'
+                    }`} 
+                  />
+                </div>
+
+                {/* Input Estilizado */}
+                <input
+                  type="text"
+                  placeholder="Search assets (video, audio, images...)"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="h-3 w-full bg-[#161616]/50 backdrop-blur-xl border border-white/5 rounded-2xl py-3 pl-12 pr-12 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-red-600/30 focus:bg-[#1a1a1a] transition-all duration-300"
+                />
+
+                {/* Botão de Limpar (Aparece só quando tem texto) */}
+                <AnimatePresence>
+                  {searchQuery && (
+                    <motion.button
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      onClick={() => setSearchQuery("")}
+                      className="absolute inset-y-0 right-4 flex items-center text-zinc-500 hover:text-white transition-colors"
+                    >
+                      <X size={14} />
+                    </motion.button>
+                  )}
+                </AnimatePresence>
+              </div>
+
+                  {filteredAssets.length > 0 ? (
+                    filteredAssets.map((asset, index) => (
+                      <motion.div
+                        key={asset.path} // Certifique-se que asset.path seja único
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: index * 0.05 }}
+                        onClick={(e) => toggleAssetSelection(asset, e.shiftKey || e.ctrlKey)}
+                        className={`group relative aspect-video bg-[#1a1a1a] rounded-lg overflow-hidden border border-white/5 hover:border-red-600/50 transition-colors cursor-pointer
+                        ${selectedAssets.includes(asset) ? 'bg-red-500/10 border-red-500' : 'bg-[#151515] border-zinc-800 hover:border-zinc-600'}`}
+                        draggable="true"
+                        onDragStart={(e) => handleDragStart(e, null, null, null, asset.name, false, null)}
+                      >
+                        {/* Thumbnail: Renderiza se não for áudio E se houver URL */}
+                        {asset.type !== 'audio' && asset.thumbnailUrl && (
+                          <img 
+                            src={asset.thumbnailUrl} 
+                            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                            alt={asset.name}
+                          />
+                        )}
+
+                        {/* Estado para Áudio */}
+                        {asset.type === 'audio' && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-[#121212]">
+                            <Music 
+                              size={48} 
+                              className="text-gray-600 transition-colors duration-300 group-hover:text-red-600" 
+                            />
+                          </div>
+                        )}
+
+                        {/* Gradient Overlay */}
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/40 opacity-100" />
+
+                        {/* Badge de Duração (Não mostra para imagens) */}
+                        {asset.type !== 'image' && asset.duration && (
+                          <div className="absolute bottom-2 right-2 bg-black/70 backdrop-blur-md px-1.5 py-0.5 rounded text-[10px] font-mono text-white">
+                            {formatTime(asset.duration)}
+                          </div>
+                        )}
+
+                        {/* Ícone de Tipo */}
+                        <div className="absolute top-2 left-2 p-1 bg-black/50 backdrop-blur-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
+                          {asset.type === 'video' && <Play size={12} className="text-white" />}
+                          {asset.type === 'audio' && <Music size={12} className="text-white" />}
+                          {asset.type === 'image' && <ImageIcon size={12} className="text-white" />}
+                        </div>
+
+                        {/* Nome do Arquivo */}
+                        <div className="absolute bottom-2 left-2 right-12 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <p className="text-[10px] text-white truncate font-medium drop-shadow-lg" contentEditable
+                          suppressContentEditableWarning={true}
+                          onDoubleClick={(e) => {
+                            // Garante que o texto seja selecionado ao dar duplo clique
+                            e.stopPropagation();
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              (e.target as HTMLElement).blur(); // Dispara o onBlur
+                            }
+
+                            if (e.key === 'Escape') {
+                              // Cancel edit
+                              e.currentTarget.innerText = asset.name;
+                              e.currentTarget.blur();
+                            }
+                          }}
+                          onBlur={(e) => {
+                            const newName = e.target.innerText.trim();
+                            handleRenameAsset(asset.name, newName);
+                          }}>
+                            {asset.name}
+                          </p>
+                        </div>
+                      </motion.div>
+                    )) // Fechamento correto do .map
+                  ) : (
+                    /* Empty State */
+                    <div className="col-span-full py-20 text-center">
+                      <Search size={48} className="mx-auto text-zinc-800 mb-4" />
+                      <p className="text-zinc-500 text-sm italic">No assets match your search...</p>
+                    </div>
+                  )}
               
-              
-  {assets.map((asset, index) => (
-    <motion.div
-      key={asset.path}
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.05 }}
-      className="group relative aspect-video bg-[#1a1a1a] rounded-lg overflow-hidden border border-white/5 hover:border-red-600/50 transition-colors cursor-pointer"
-    >
-      {/* Thumbnail */}
-      {
-        asset.type !== 'audio' &&   (<img 
-        src={asset.thumbnailUrl} 
-        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
-        alt={asset.name}
-        />)
-      }
-
-
-      {asset.type === 'audio' && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[#121212]">
-          <Music 
-            size={48} 
-            className="text-gray-600 transition-colors duration-300 group-hover:text-red-600" 
-          />
-        </div>
-      )}
-      
-
-      
-
-      {/* Gradient Overlay (Sombra para os textos aparecerem) */}
-      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/40 opacity-100" />
-
-      {/* Badge de Duração (Canto inferior direito) */}
-      {asset.type !== 'image' && (
-        <div className="absolute bottom-2 right-2 bg-black/70 backdrop-blur-md px-1.5 py-0.5 rounded text-[10px] font-mono text-white">
-          {formatTime(asset.duration)}
-        </div>
-      )}
-
-      {/* Ícone de Tipo (Canto superior esquerdo) */}
-      <div className="absolute top-2 left-2 p-1 bg-black/50 backdrop-blur-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
-        {asset.type === 'video' && <Play size={12} className="text-white" />}
-        {asset.type === 'audio' && <Music size={12} className="text-white" />}
-        {asset.type === 'image' && <ImageIcon size={12} className="text-white" />}
-      </div>
-
-      {/* Nome do Arquivo (Apenas no Hover ou sempre embaixo) */}
-      <div className="absolute bottom-2 left-2 right-12 opacity-0 group-hover:opacity-100 transition-opacity">
-        <p className="text-[10px] text-white truncate font-medium drop-shadow-lg">
-          {asset.name}
-        </p>
-      </div>
-    </motion.div>
-  ))}
+     
             </div>
           </aside>
 
@@ -2782,7 +2765,7 @@ return (
 
      {/* Header da Timeline / Ruler */}
   <div className="flex bg-zinc-900/50">
-    <div className="w-48 shrink-0 border-r border-white/5" /> 
+    <div className="w-50 shrink-0 border-r border-white/5" /> 
     
     <div 
       className="flex-1 relative h-8 border-b border-white/5 cursor-pointer overflow-hidden"
@@ -2809,30 +2792,33 @@ return (
     {/* AGULHA (PLAYHEAD) - Agora solta dentro do container de scroll */}
     <div ref={playheadRef}
       className="absolute top-0 bottom-0 w-[2px] bg-red-600 z-[100] pointer-events-none transition-transform duration-75 ease-out" 
-      style={{ left: playheadPos + asidetrackwidth  + 8 }} // +8 por causa do padding p-2 do container
+      style={{ left: playheadPos + asidetrackwidth + 8 }} // +8 por causa do padding p-2 do container
 
     >
         {/* Cabeça da agulha (Triângulo ou Círculo) */}
-        <div  className="w-4 h-4 bg-red-600 rounded-b-full shadow-[0_0_10px_rgba(220,38,38,0.5)] -ml-[7px]" />
+        <div onMouseDown={handlePlayheadMouseDown}  className="w-4 h-4 bg-red-600 rounded-b-full shadow-[0_0_10px_rgba(220,38,38,0.5)] -ml-[7px]" />
     </div>
 
  
 
     {/* Renderização das Tracks (Seu código de sort e map aqui) */}
-    {tracks.sort(
-
-            (a, b) => {
-    // Definimos pesos: Video/Effects = 0 (topo), Audio = 1 (baixo)
-    const priority = (type: string) => (type === 'audio' ? 1 : 0);
-
+    {Array.from(
+  // 1. Cria um Map usando o id como chave para eliminar duplicatas
+  new Map(tracks.map((t) => [t.id, t])).values()
+)
+  // 2. Ordena as tracks únicas
+  .sort((a, b) => {
+    const priority = (type: string) => (type === "audio" ? 1 : 0);
     const pA = priority(a.type);
     const pB = priority(b.type);
 
     if (pA !== pB) {
-      return pA - pB; // Se os tipos forem diferentes, ordena pelo peso
+      return pA - pB;
     }
-    return a.id - b.id; // Se o tipo for igual, ordena pelo ID original
-  }).map((track) => (
+    return a.id - b.id;
+  })
+  // 3. Mapeia para o componente
+  .map((track) => (
       <div key={track.id} className="flex gap-2 group">
         
         {/* ASIDE: Controles da Track */}
