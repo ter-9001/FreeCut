@@ -2893,8 +2893,13 @@ return (
             const thumbs = timelineThumbs[cacheKey];
             const assetTarget = assets.find( a => a.name === clip.name)
 
-            const margintitle = pixelsPerSecond > 20 ? 16 : 0
-            const iconSize = pixelsPerSecond > 20 ? 40 : 20
+            let margintitle = pixelsPerSecond > 30 ? -5 : -15
+            const iconSize = pixelsPerSecond > 30 ? 40 : 20
+
+
+            margintitle = pixelsPerSecond > 50 ? 30 : margintitle
+
+
 
             
             return (
@@ -2930,8 +2935,11 @@ return (
               )}
 
 
-              {assetTarget?.type === 'audio' && (
-                <Music size={iconSize} className="text-white m-2" />
+              {assetTarget?.type === 'audio' && pixelsPerSecond>10 && (
+                <div className="relative flex items-center w-[40px] m-0">
+                  <Music size={iconSize} className="text-white m-2" />
+                </div>
+
               )}
 
               
@@ -2949,9 +2957,9 @@ return (
 
 
               <div className="absolute left-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'left')} />
-              <div className="px-3 w-full">
-                <p className="truncate ... text-[9px] font-black text-white truncate uppercase italic leading-none drop-shadow-md w-[90%]"
-                style={{ marginLeft: margintitle}}>
+              <div className="px-3 w-full" style={{ marginLeft: margintitle}}>
+                <p className="truncate ... text-[9px] font-black text-white uppercase italic leading-none drop-shadow-md w-[90%]"
+                >
                   {clip.name}
                 </p>
               </div>
