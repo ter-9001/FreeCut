@@ -126,6 +126,8 @@ export default function App() {
   const audioExtensions = ['mp3', 'wav', 'ogg'];
   const videoExtensions = ['mp4', 'mkv', 'avi', 'mov'];
 
+  
+
 
 
 
@@ -194,6 +196,43 @@ export default function App() {
 };
 
 */
+
+//code to put thumbnaisl in clip
+
+const [timelineThumbs, setTimelineThumbs] = useState<Record<string, { start: string, end: string }>>({});
+
+useEffect(() => {
+  const generateTimelineThumbs = async () => {
+    if (!currentProjectPath) return;
+
+    for (const clip of clips) {
+      // Só gera se for vídeo e se ainda não estiver no cache (ou se o tempo mudou)
+      const cacheKey = `${clip.id}-${clip.beginmoment}-${clip.duration}`;
+
+      const assetTarget = assets.find( a => a.name === clip.name)
+      
+      if (assetTarget?.type === 'video' && !timelineThumbs[cacheKey]) {
+        try {
+          const startPath = await getThumbnail(currentProjectPath, clip.name, clip.beginmoment);
+          const endPath = await getThumbnail(currentProjectPath, clip.name, clip.beginmoment + clip.duration);
+
+          setTimelineThumbs(prev => ({
+            ...prev,
+            [cacheKey]: {
+              start: startPath ? startPath : "",
+              end: endPath ? endPath : ""
+            }
+          }));
+        } catch (err) {
+          console.error("Erro ao gerar thumb da timeline:", err);
+        }
+      }
+    }
+  };
+
+  generateTimelineThumbs();
+}, [clips, currentProjectPath]);
+
 
 // Delete clean tracks
 useEffect(() => {
@@ -2847,7 +2886,18 @@ return (
           style={{ height: '64px' }}
         >
           {/* Clips filtrados por track.id */}
-          {clips.filter(c => Number(c.trackId) === Number(track.id)).map((clip) => (
+          {clips.filter(c => Number(c.trackId) === Number(track.id)).map((clip) => {
+            
+
+            const cacheKey = `${clip.id}-${clip.beginmoment}-${clip.duration}`;
+            const thumbs = timelineThumbs[cacheKey];
+            const assetTarget = assets.find( a => a.name === clip.name)
+
+            const margintitle = pixelsPerSecond > 20 ? 16 : 0
+            const iconSize = pixelsPerSecond > 20 ? 40 : 20
+
+            
+            return (
             <motion.div 
               key={clip.id} layoutId={clip.id}
               draggable="true"
@@ -2861,15 +2911,53 @@ return (
                 width: clip.duration * pixelsPerSecond,
               }}
             >
+
+              {/* Thumbnail de Início (Fundo) */}
+              {thumbs?.start && assetTarget?.type === 'video' && (
+                <img 
+                  src={thumbs.start} 
+                  className="absolute left-0 top-0 h-full w-16 object-cover opacity-80 pointer-events-none border-r border-white/10" 
+                  alt=""
+                />
+              )}
+
+              {assetTarget?.type === 'image' && (
+                <img 
+                  src={convertFileSrc(`${currentProjectPath}/videos/${clip.name}`)} 
+                  className="absolute left-0 top-0 h-full w-16 object-cover opacity-80 pointer-events-none border-r border-white/10" 
+                  alt=""
+                />
+              )}
+
+
+              {assetTarget?.type === 'audio' && (
+                <Music size={iconSize} className="text-white m-2" />
+              )}
+
+              
+
+
+
+              {/* Thumbnail de Fim (Fundo) */}
+              {thumbs?.end && assetTarget?.type === 'video' && (
+                <img 
+                  src={thumbs.end} 
+                  className="absolute right-0 top-0 h-full w-16 object-cover opacity-80 pointer-events-none border-l border-white/10" 
+                  alt=""
+                />
+              )}
+
+
               <div className="absolute left-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'left')} />
               <div className="px-3 w-full">
-                <p className="text-[9px] font-black text-white truncate uppercase italic leading-none drop-shadow-md">
+                <p className="truncate ... text-[9px] font-black text-white truncate uppercase italic leading-none drop-shadow-md w-[90%]"
+                style={{ marginLeft: margintitle}}>
                   {clip.name}
                 </p>
               </div>
               <div className="absolute right-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'right')} />
             </motion.div>
-          ))}
+          )})}
         </div>
       </div>
     ))}

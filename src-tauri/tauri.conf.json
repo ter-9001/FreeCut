@@ -30,7 +30,7 @@
       },
       "assetProtocol": {
         "enable": true,
-        "scope": ["$HOME/project_test_freecut/**"]
+        "scope": ["*/**"]
       }
     }
   },
