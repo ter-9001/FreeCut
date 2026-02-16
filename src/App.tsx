@@ -276,6 +276,7 @@ const updatePreview = (currentTime: number) => {
 
 };
 
+
 useEffect(() => {
   if (!mainPlayer.current) return;
 
@@ -289,8 +290,11 @@ useEffect(() => {
 
 
   const originalPath = `${currentProjectPath}/videos/${topClip.name}`
-  const path =  convertFileSrc(originalPath);
+  const encoded =  encodeURIComponent(originalPath);
+  const path = `stream://localhost/${encoded}`
+
   const presentTime = (currentTime - topClip.start) + (topClip.beginmoment || 0);
+
 
   // 1. SÓ altera o SRC se o vídeo for realmente outro arquivo
   // Comparar o src atual evita o reset constante do buffer
@@ -2823,7 +2827,7 @@ return (
                   >
                    
 
-                    <video ref={mainPlayer}  preload="metadata" crossOrigin="anonymous" muted playsInline className='absolute inset-0 w-full h-full object-cover' />
+                    <video ref={mainPlayer} playsInline   preload="auto" muted   className='absolute inset-0 w-full h-full object-cover' />
 
                     
                     
@@ -2837,6 +2841,8 @@ return (
 
                     
                 </div>
+
+         
 
             
 
