@@ -121,6 +121,8 @@ export default function App() {
 
   
   const playheadRef = useRef<HTMLDivElement>(null);
+  const mainPlayer = useRef<HTMLVideoElement>(null);
+
 
   const imageExtensions = ['jpg', 'jpeg', 'png', 'webp'];
   const audioExtensions = ['mp3', 'wav', 'ogg'];
@@ -157,10 +159,7 @@ export default function App() {
   //snap function
   const [isSnapEnabled, setIsSnapEnabled] = useState(false);
 
-
-  const [isPlaying, setIsPlaying] = useState(false);
-  const requestRef = useRef<number | null>(null);
-  const lastTimeRef = useRef<number | null>(null);
+  //const to search assets
   const [searchQuery, setSearchQuery] = useState("");
 
 
@@ -197,9 +196,178 @@ export default function App() {
 
 */
 
-//code to put thumbnaisl in clip
+//const to put thumbnaisl in clip
 
 const [timelineThumbs, setTimelineThumbs] = useState<Record<string, { start: string, end: string }>>({});
+
+
+//const to preview videos
+
+
+const [currentTime, setCurrentTime] = useState(0); // O tempo atual da agulha (Playhead)
+const [isPlaying, setIsPlaying] = useState(false); // Se o motor de reprodução está correndo
+const requestRef = useRef<number>(); // Para o loop de animação de alta precisão
+const lastTimeRef = useRef<number | null>(null);
+
+const [topClip, setTopClip] = useState<Clip | null>(null);
+// Refs para os vídeos para controle de sincronia preciso
+const videoRefs = useRef<Record<string, HTMLVideoElement>>({});
+
+//code to video preview
+
+
+const setframe = (currentTime: number) => {
+  if (!isPlaying) return;
+
+  // 1. Filtrar clipes que deveriam estar passando agora
+  const currentClips = clips.filter(clip => 
+    currentTime >= clip.start && currentTime <= (clip.start + clip.duration) && knowTypeByAssetName(clip.name, true) === 'video'
+  );
+
+  // 2. Prioridade: Ordenar por Track 
+  const sorted_tracks = order_tracks();
+  const sortedTracksId = sorted_tracks.map( t => t.id) 
+
+  let sortedClips = currentClips.sort((a, b) => {
+    // Order by sorted_tracks (Visual Order)
+    const trackA = sortedTracksId.indexOf(a.trackId);
+    const trackB = sortedTracksId.indexOf(b.trackId);
+
+    if (trackA !== trackB) {
+      return trackA - trackB;
+    }
+
+  });
+
+};
+
+
+const updatePreview = (currentTime: number) => {
+  // 1. Sua lógica de filtro e ordenação
+  const currentClips = clips.filter(clip => 
+    currentTime >= clip.start && 
+    currentTime <= (clip.start + clip.duration) && 
+    knowTypeByAssetName(clip.name, true) === 'video'
+  );
+
+  if (currentClips.length == 0)
+  {
+    setTopClip(null)
+    return
+  }  
+      
+
+  const sorted_tracks = order_tracks();
+  const sortedTracksId = sorted_tracks.map(t => t.id);
+
+  const sortedClips = currentClips.sort((a, b) => {
+    const trackA = sortedTracksId.indexOf(a.trackId);
+    const trackB = sortedTracksId.indexOf(b.trackId);
+    return trackA - trackB;
+  });
+
+
+
+  // 2. O Vencedor (topo da pilha)
+  const winner = sortedClips[0] || null;
+  setTopClip(winner);
+
+  
+
+};
+
+useEffect(() => {
+  if (!mainPlayer.current) return;
+
+  if(!topClip)
+  {
+    mainPlayer.current.src = ''
+    mainPlayer.current.setAttribute('data-current-path', '')
+    mainPlayer.current.load()
+    return
+  }  
+
+
+  const originalPath = `${currentProjectPath}/videos/${topClip.name}`
+  const path =  convertFileSrc(originalPath);
+  const presentTime = (currentTime - topClip.start) + (topClip.beginmoment || 0);
+
+  // 1. SÓ altera o SRC se o vídeo for realmente outro arquivo
+  // Comparar o src atual evita o reset constante do buffer
+  if (mainPlayer.current.getAttribute('data-current-path') !== path) {
+    mainPlayer.current.src = path;
+    mainPlayer.current.setAttribute('data-current-path', path); // Guardamos uma referência limpa
+    mainPlayer.current.load();
+    
+    // Opcional: Se o player global estiver em "Play", o novo clipe deve começar dando play
+    if (isPlaying) {
+      mainPlayer.current.play().catch(e => console.error("Erro ao dar play:", e));
+    }
+  }
+
+  // 2. Sincroniza o tempo
+  // Usamos uma margem pequena (0.1s) para evitar micro-travamentos de busca
+  if (Math.abs(mainPlayer.current.currentTime - presentTime) > 0.1) {
+    mainPlayer.current.currentTime = presentTime;
+  }
+
+}, [topClip, currentTime, isPlaying]); // Adicione currentTime aqui para manter a agulha e o vídeo juntos
+
+
+
+useEffect(() => {
+  if (isPlaying) {
+    updatePreview(currentTime);
+  }
+}, [isPlaying, currentTime]);
+
+
+useEffect(() => {
+  setCurrentTime(playheadPos/pixelsPerSecond)
+}, [playheadPos])
+
+
+ const animate = (time: number) => {
+  if (lastTimeRef.current !== null) {
+    const deltaTime = (time - lastTimeRef.current) / 1000; // Segundos passados
+    
+    setPlayheadPos(prev => {
+      const nextPos = prev + (deltaTime * PIXELS_PER_SECOND);
+      // Opcional: Auto-scroll da timeline para seguir a agulha
+      if (timelineContainerRef.current) {
+        const container = timelineContainerRef.current;
+        const scrollRight = container.scrollLeft + container.clientWidth;
+        if (nextPos > scrollRight - 50) {
+          container.scrollLeft += 5; // Scroll suave
+        }
+      }
+      return nextPos;
+    });
+  }
+  lastTimeRef.current = time;
+  requestRef.current = requestAnimationFrame(animate);
+};
+
+useEffect(() => {
+  if (isPlaying) {
+    requestRef.current = requestAnimationFrame(animate);
+  } else {
+    if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    lastTimeRef.current = null;
+  }
+  return () => {
+    if (requestRef.current) cancelAnimationFrame(requestRef.current);
+  };
+}, [isPlaying]);
+
+
+
+
+
+
+
+//generate thubnais in timeline
+
 
 useEffect(() => {
   const generateTimelineThumbs = async () => {
@@ -727,6 +895,7 @@ const handleTimelineMouseUp = () => {
       // Zoom in with Ctrl + "+" or just "+"
       if ((e.ctrlKey || e.metaKey) && e.key === '=') {
         e.preventDefault();
+        order_tracks()
         handleZoom(10);
       }
       // Zoom out with Ctrl + "-" or just "-"
@@ -798,29 +967,15 @@ const handleTimelineMouseUp = () => {
     setIsPlaying(prev => !prev);
   };
 
-  const animate = (time: number) => {
-    if (lastTimeRef.current !== null) {
-      const deltaTime = (time - lastTimeRef.current) / 1000; // Segundos passados
-      
-      setPlayheadPos(prev => {
-        const nextPos = prev + (deltaTime * PIXELS_PER_SECOND);
-        // Opcional: Auto-scroll da timeline para seguir a agulha
-        if (timelineContainerRef.current) {
-          const container = timelineContainerRef.current;
-          const scrollRight = container.scrollLeft + container.clientWidth;
-          if (nextPos > scrollRight - 50) {
-            container.scrollLeft += 5; // Scroll suave
-          }
-        }
-        return nextPos;
-      });
-    }
-    lastTimeRef.current = time;
-    requestRef.current = requestAnimationFrame(animate);
-  };
 
+
+
+
+
+  //undo and redo 
 
   const lastSavedState = useRef(JSON.stringify({ clips, assets }));
+
 
   useEffect(() => {
   const currentState = JSON.stringify({ clips, assets });
@@ -851,17 +1006,7 @@ const handleTimelineMouseUp = () => {
     }, [clips, assets]);
   
 
-  useEffect(() => {
-    if (isPlaying) {
-      requestRef.current = requestAnimationFrame(animate);
-    } else {
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
-      lastTimeRef.current = null;
-    }
-    return () => {
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
-    };
-  }, [isPlaying]);
+ 
 
   /**
  * Calculates the boundaries for a specific clip
@@ -1758,7 +1903,7 @@ const order_tracks = () =>
 
   const tracks_order= tracks.filter(t => activeTracksId.includes(t.id)).sort(
 
-                (a, b) => {
+      (a, b) => {
         // Definimos pesos: Video/Effects = 0 (topo), Audio = 1 (baixo)
         const priority = (type: string) => (type === 'audio' ? 1 : 0);
 
@@ -1771,8 +1916,8 @@ const order_tracks = () =>
         return a.id - b.id; // Se o tipo for igual, ordena pelo ID original
       })
 
-
-      console.log('order trakcs', tracks_order)
+      console.log('tracks', tracks)
+      console.log('order tracks', tracks_order)
 
       return tracks_order
 
@@ -2667,16 +2812,33 @@ return (
 
           {/* PREVIEW PLAYER */}
           <section className="flex-1 bg-black flex flex-col items-center justify-center p-8 relative">
-            <div 
-              className="w-full max-w-4xl aspect-video bg-[#050505] rounded-xl border border-zinc-800 flex items-center justify-center relative group cursor-pointer overflow-hidden shadow-2xl"
-              onClick={togglePlay}
-            >
-              {isPlaying ? (
-                <Pause size={56} className="text-white/5 group-hover:text-white/30 transition-all scale-90 group-hover:scale-100" />
-              ) : (
-                <Play size={56} className="text-white/5 group-hover:text-white/30 transition-all scale-90 group-hover:scale-100" />
-              )}
-            </div>
+            
+
+
+
+              
+                <div 
+                  className="w-full max-w-4xl aspect-video bg-[#050505] rounded-xl border border-zinc-800 flex items-center justify-center relative group cursor-pointer overflow-hidden shadow-2xl"
+                  onClick={togglePlay}
+                  >
+                   
+
+                    <video ref={mainPlayer}  preload="metadata" crossOrigin="anonymous" muted playsInline className='absolute inset-0 w-full h-full object-cover' />
+
+                    
+                    
+                    
+                    {isPlaying ? (
+                      <Pause size={56} className="text-white/5 group-hover:text-white/30 transition-all scale-90 group-hover:scale-100" />
+                    ) : (
+                      <Play size={56} className="text-white/5 group-hover:text-white/30 transition-all scale-90 group-hover:scale-100" />
+                    )}
+
+
+                    
+                </div>
+
+            
 
             {/* PLAYER CONTROLS */}
             <div className="flex items-center gap-8 mt-6">

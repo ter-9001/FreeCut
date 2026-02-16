@@ -28,6 +28,7 @@
       "script-src": "'self' asset: https://asset.localhost",
       "style-src": "'self' asset: https://asset.localhost"
       },
+      
       "assetProtocol": {
         "enable": true,
         "scope": ["*/**"]
