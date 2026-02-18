@@ -16,8 +16,6 @@
 
 **Professional Timeline**
 
-![Texto Alternativo](./img_readme/timeline.png)
-
 ![Texto Alternativo](./img_readme/preview_video.png)
 
 
