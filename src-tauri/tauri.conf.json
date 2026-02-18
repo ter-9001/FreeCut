@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; media-src 'self' stream://localhost/* blob:;",
+      "csp": null,
       
       "assetProtocol": {
         "enable": true,

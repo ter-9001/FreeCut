@@ -21,6 +21,13 @@ use std::path::PathBuf;
 use tauri::command;
 use std::process::Command;
 
+use std::thread;
+use std::fs::File;
+use tiny_http::{Server, Response, Header};
+use std::io::{Read, Seek, SeekFrom}; 
+
+
+
 
 #[derive(serde::Serialize)]
 struct Project {
@@ -35,6 +42,7 @@ pub struct VideoMetadata {
 }
 
 use tauri_plugin_shell::ShellExt;
+
 
 
 #[tauri::command]
@@ -354,114 +362,40 @@ Ok(VideoMetadata { duration })
 }
 
 
+use opencv::{prelude::*, videoio, core, imgcodecs};
+use base64::{engine::general_purpose, Engine as _};
+
+#[tauri::command]
+async fn get_video_frame(path: String, time_ms: f64) -> Result<String, String> {
+    let mut cam = videoio::VideoCapture::from_file(&path, videoio::CAP_ANY)
+        .map_err(|e| e.to_string())?;
+    
+    // Move o "ponteiro" do vídeo para o milissegundo desejado
+    cam.set(videoio::CAP_PROP_POS_MSEC, time_ms).map_err(|e| e.to_string())?;
+    
+    let mut frame = core::Mat::default();
+    if cam.read(&mut frame).map_err(|e| e.to_string())? {
+        let mut buffer = core::Vector::<u8>::new();
+        imgcodecs::imencode(".jpg", &frame, &mut buffer, &core::Vector::default()).map_err(|e| e.to_string())?;
+        
+        let b64 = general_purpose::STANDARD.encode(buffer.as_slice());
+        Ok(format!("data:image/jpeg;base64,{}", b64))
+    } else {
+        Err("Não foi possível ler o frame".into())
+    }
+}
+
 
 fn main() {
+
+
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_dialog::init()) // Inicializa o plugin de diálogo
-        .register_uri_scheme_protocol("stream", |_app, request| {
-            use std::io::{Read, Seek, SeekFrom};
-            use tauri::http::Response;
-
-            let uri = request.uri().to_string();
-            // URL format: stream://localhost/<encoded_path>
-            let path = uri
-                .strip_prefix("stream://localhost/")
-                .or_else(|| uri.strip_prefix("stream://localhost"))
-                .unwrap_or("");
-            let path = percent_encoding::percent_decode_str(path)
-                .decode_utf8_lossy()
-                .into_owned();
-            // Ensure leading slash on macOS
-            let path = if !path.starts_with('/') {
-                format!("/{path}")
-            } else {
-                path
-            };
-
-            let mime = if path.ends_with(".mp4") || path.ends_with(".m4v") {
-                "video/mp4"
-            } else if path.ends_with(".mov") {
-                "video/quicktime"
-            } else if path.ends_with(".webm") {
-                "video/webm"
-            } else if path.ends_with(".mkv") {
-                "video/x-matroska"
-            } else if path.ends_with(".wav") {
-                "audio/wav"
-            } else if path.ends_with(".mp3") {
-                "audio/mpeg"
-            } else if path.ends_with(".aac") || path.ends_with(".m4a") {
-                "audio/aac"
-            } else if path.ends_with(".png") {
-                "image/png"
-            } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
-                "image/jpeg"
-            } else {
-                "application/octet-stream"
-            };
-
-            let mut file = match std::fs::File::open(&path) {
-                Ok(f) => f,
-                Err(_) => {
-                    return Response::builder()
-                        .status(404)
-                        .header("Content-Type", "text/plain")
-                        .body(format!("File not found: {path}").into_bytes())
-                        .unwrap();
-                }
-            };
-
-            let total_size = file.metadata().map(|m| m.len()).unwrap_or(0);
-
-            // Check for Range header (required for video seeking)
-            let range_header = request
-                .headers()
-                .get("range")
-                .and_then(|v| v.to_str().ok())
-                .map(String::from);
-
-            if let Some(range) = range_header {
-                let range = range.strip_prefix("bytes=").unwrap_or(&range);
-                let parts: Vec<&str> = range.split('-').collect();
-                let start: u64 = parts[0].parse().unwrap_or(0);
-                let end: u64 = if parts.len() > 1 && !parts[1].is_empty() {
-                    parts[1].parse().unwrap_or(total_size - 1)
-                } else {
-                    let chunk_size: u64 = 1024 * 1024; // 1 MB chunks
-                    std::cmp::min(start + chunk_size - 1, total_size - 1)
-                };
-
-                let length = end - start + 1;
-                file.seek(SeekFrom::Start(start)).ok();
-                let mut buf = vec![0u8; length as usize];
-                file.read_exact(&mut buf).ok();
-
-                Response::builder()
-                    .status(206)
-                    .header("Content-Type", mime)
-                    .header("Content-Length", length.to_string())
-                    .header(
-                        "Content-Range",
-                        format!("bytes {start}-{end}/{total_size}"),
-                    )
-                    .header("Accept-Ranges", "bytes")
-                    .body(buf)
-                    .unwrap()
-            } else {
-                let mut buf = Vec::with_capacity(total_size as usize);
-                file.read_to_end(&mut buf).ok();
-
-                Response::builder()
-                    .header("Content-Type", mime)
-                    .header("Content-Length", total_size.to_string())
-                    .header("Accept-Ranges", "bytes")
-                    .body(buf)
-                    .unwrap()
-            }
-        })
-        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project, rename_file, get_video_metadata, generate_thumbnail, delete_file])
+        .plugin(tauri_plugin_dialog::init()) // dialog plugin
+        // Custom protocol for serving local video files with range-request support
+        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project, rename_file, get_video_metadata, generate_thumbnail, delete_file, get_video_frame])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

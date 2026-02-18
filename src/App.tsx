@@ -121,7 +121,10 @@ export default function App() {
 
   
   const playheadRef = useRef<HTMLDivElement>(null);
-  const mainPlayer = useRef<HTMLVideoElement>(null);
+  //const mainPlayer = useRef<HTMLVideoElement>(null);
+
+
+  const canvasRef = useRef<HTMLCanvasElement>(null)
 
 
   const imageExtensions = ['jpg', 'jpeg', 'png', 'webp'];
@@ -129,6 +132,13 @@ export default function App() {
   const videoExtensions = ['mp4', 'mkv', 'avi', 'mov'];
 
   
+    // Default zoom: 100 pixels represents 1 second
+  const [pixelsPerSecond, setPixelsPerSecond] = useState(10);
+
+  // Limits to prevent the timeline from disappearing or becoming infinite
+  const MIN_ZOOM = 1;
+  const MAX_ZOOM = 200;
+
 
 
 
@@ -204,9 +214,9 @@ const [timelineThumbs, setTimelineThumbs] = useState<Record<string, { start: str
 //const to preview videos
 
 
-const [currentTime, setCurrentTime] = useState(0); // O tempo atual da agulha (Playhead)
-const [isPlaying, setIsPlaying] = useState(false); // Se o motor de reprodução está correndo
-const requestRef = useRef<number>(); // Para o loop de animação de alta precisão
+const [currentTime, setCurrentTime] = useState(0); // Playhead time
+const [isPlaying, setIsPlaying] = useState(false); 
+const requestRef = useRef <number>(); // for loop animation loop of high precision
 const lastTimeRef = useRef<number | null>(null);
 
 const [topClip, setTopClip] = useState<Clip | null>(null);
@@ -216,37 +226,12 @@ const videoRefs = useRef<Record<string, HTMLVideoElement>>({});
 //code to video preview
 
 
-const setframe = (currentTime: number) => {
-  if (!isPlaying) return;
-
-  // 1. Filtrar clipes que deveriam estar passando agora
-  const currentClips = clips.filter(clip => 
-    currentTime >= clip.start && currentTime <= (clip.start + clip.duration) && knowTypeByAssetName(clip.name, true) === 'video'
-  );
-
-  // 2. Prioridade: Ordenar por Track 
-  const sorted_tracks = order_tracks();
-  const sortedTracksId = sorted_tracks.map( t => t.id) 
-
-  let sortedClips = currentClips.sort((a, b) => {
-    // Order by sorted_tracks (Visual Order)
-    const trackA = sortedTracksId.indexOf(a.trackId);
-    const trackB = sortedTracksId.indexOf(b.trackId);
-
-    if (trackA !== trackB) {
-      return trackA - trackB;
-    }
-
-  });
-
-};
-
 
 const updatePreview = (currentTime: number) => {
   // 1. Sua lógica de filtro e ordenação
   const currentClips = clips.filter(clip => 
-    currentTime >= clip.start && 
-    currentTime <= (clip.start + clip.duration) && 
+    currentTime >= clip.start  && 
+    currentTime <= (clip.start  + clip.duration) && 
     knowTypeByAssetName(clip.name, true) === 'video'
   );
 
@@ -277,45 +262,61 @@ const updatePreview = (currentTime: number) => {
 };
 
 
+
+
+
+
 useEffect(() => {
-  if (!mainPlayer.current) return;
-
-  if(!topClip)
-  {
-    mainPlayer.current.src = ''
-    mainPlayer.current.setAttribute('data-current-path', '')
-    mainPlayer.current.load()
-    return
-  }  
+  setCurrentTime(playheadPos/pixelsPerSecond)
+}, [playheadPos])
 
 
-  const originalPath = `${currentProjectPath}/videos/${topClip.name}`
-  const encoded =  encodeURIComponent(originalPath);
-  const path = `stream://localhost/${encoded}`
-
-  const presentTime = (currentTime - topClip.start) + (topClip.beginmoment || 0);
+// Dentro do App.tsx
 
 
-  // 1. SÓ altera o SRC se o vídeo for realmente outro arquivo
-  // Comparar o src atual evita o reset constante do buffer
-  if (mainPlayer.current.getAttribute('data-current-path') !== path) {
-    mainPlayer.current.src = path;
-    mainPlayer.current.setAttribute('data-current-path', path); // Guardamos uma referência limpa
-    mainPlayer.current.load();
+useEffect(() => {
+  const drawFrame = async () => {
+    if (!canvasRef.current) return;
     
-    // Opcional: Se o player global estiver em "Play", o novo clipe deve começar dando play
-    if (isPlaying) {
-      mainPlayer.current.play().catch(e => console.error("Erro ao dar play:", e));
+    const ctx = canvasRef.current.getContext('2d');
+
+
+    if(!topClip)
+    {
+        if (ctx && canvasRef.current) {
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+      }
+      return
     }
-  }
 
-  // 2. Sincroniza o tempo
-  // Usamos uma margem pequena (0.1s) para evitar micro-travamentos de busca
-  if (Math.abs(mainPlayer.current.currentTime - presentTime) > 0.1) {
-    mainPlayer.current.currentTime = presentTime;
-  }
+    // time in miliseconds
+    const clipTimeMs = ((currentTime - topClip.start) + (topClip.beginmoment || 0)) * 1000;
+    const path = `${currentProjectPath}/videos/${topClip.name}`;
 
-}, [topClip, currentTime, isPlaying]); // Adicione currentTime aqui para manter a agulha e o vídeo juntos
+    try {
+      // call function in rust to generate frames
+      const frameBase64: string = await invoke('get_video_frame', { 
+        path, 
+        timeMs: clipTimeMs 
+      });
+
+      const img = new Image();
+      img.onload = () => {
+        if (canvasRef.current) {
+            canvasRef.current.width = img.width;
+            canvasRef.current.height = img.height;
+            ctx?.drawImage(img, 0, 0);
+        }
+      };
+      img.src = frameBase64;
+    } catch (err) {
+      console.error("Erro ao buscar frame:", err);
+    }
+  };
+
+  drawFrame();
+}, [currentTime, topClip]); // Agora o currentTime é seu amigo, não seu inimigo!
 
 
 
@@ -333,11 +334,11 @@ useEffect(() => {
 
  const animate = (time: number) => {
   if (lastTimeRef.current !== null) {
-    const deltaTime = (time - lastTimeRef.current) / 1000; // Segundos passados
+    const deltaTime = (time - lastTimeRef.current) / 1000; // seconds passed
     
     setPlayheadPos(prev => {
       const nextPos = prev + (deltaTime * PIXELS_PER_SECOND);
-      // Opcional: Auto-scroll da timeline para seguir a agulha
+      // Timeline Auto-scroll to follow playhead
       if (timelineContainerRef.current) {
         const container = timelineContainerRef.current;
         const scrollRight = container.scrollLeft + container.clientWidth;
@@ -356,7 +357,7 @@ useEffect(() => {
   if (isPlaying) {
     requestRef.current = requestAnimationFrame(animate);
   } else {
-    if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    //if (requestRef.current) cancelAnimationFrame(requestRef.current);
     lastTimeRef.current = null;
   }
   return () => {
@@ -558,12 +559,6 @@ const handlePlayheadMouseDown = (e: React.MouseEvent) => {
   const MAX_HISTORY_STEPS = 100;
 
 
-  // Default zoom: 100 pixels represents 1 second
-  const [pixelsPerSecond, setPixelsPerSecond] = useState(10);
-
-  // Limits to prevent the timeline from disappearing or becoming infinite
-  const MIN_ZOOM = 1;
-  const MAX_ZOOM = 200;
 
 
     /**
@@ -2827,7 +2822,8 @@ return (
                   >
                    
 
-                    <video ref={mainPlayer} playsInline   preload="auto" muted   className='absolute inset-0 w-full h-full object-cover' />
+                    {/*<video ref={mainPlayer} playsInline  preload="metadata" muted={true}   className='absolute inset-0 w-full h-full object-cover'  />*/}
+                    <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-contain" />
 
                     
                     

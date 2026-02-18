@@ -28,4 +28,5 @@ onClick={togglePlay} >
       {formatDuration(currentTime)}
     </p>
   </div>
+
 </div>
