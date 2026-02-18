@@ -43,11 +43,14 @@ import {
   Search
   
 } from 'lucide-react';
+
+import Waveform from "@/components/Waveform";
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { aside, track } from 'framer-motion/client';
 import { convertFileSrc } from '@tauri-apps/api/core';
+
 
 
 // --- INTERFACES ---
@@ -220,6 +223,8 @@ const requestRef = useRef <number>(); // for loop animation loop of high precisi
 const lastTimeRef = useRef<number | null>(null);
 
 const [topClip, setTopClip] = useState<Clip | null>(null);
+const [topAudios, setTopAudios] = useState<Clip [] | null>(null);
+
 // Refs para os vídeos para controle de sincronia preciso
 const videoRefs = useRef<Record<string, HTMLVideoElement>>({});
 
@@ -229,6 +234,9 @@ const videoRefs = useRef<Record<string, HTMLVideoElement>>({});
 
 const updatePreview = (currentTime: number) => {
   // 1. Sua lógica de filtro e ordenação
+
+ 
+
   const currentClips = clips.filter(clip => 
     currentTime >= clip.start  && 
     currentTime <= (clip.start  + clip.duration) && 
@@ -263,7 +271,125 @@ const updatePreview = (currentTime: number) => {
 
 
 
+const updateAudio = (currentTime: number) => {
+  // 1. Sua lógica de filtro e ordenação
 
+  //filter images cause it don't has audio
+
+  const currentClips = clips.filter(clip => 
+    currentTime >= clip.start  && 
+    currentTime <= (clip.start  + clip.duration) && 
+    knowTypeByAssetName(clip.name) !== 'image'
+  );
+
+  if (currentClips.length == 0)
+  {
+    setTopClip(null)
+    return
+  }  
+      
+
+  const sorted_tracks = order_tracks();
+  const sortedTracksId = sorted_tracks.map(t => t.id);
+
+  const sortedClips = currentClips.sort((a, b) => {
+    const trackA = sortedTracksId.indexOf(a.trackId);
+    const trackB = sortedTracksId.indexOf(b.trackId);
+    return trackA - trackB;
+  });
+
+
+
+  // 2. O Vencedor (topo da pilha)
+  const winner = sortedClips || null;
+
+  //console.log('present audios', winner)
+
+  winner !== topAudios ? setTopAudios(winner) : null
+
+
+  
+
+};
+
+// Referência para guardar os elementos de áudio ativos (mapa de id_do_clip -> HTMLAudioElement)
+// Referência para armazenar os players ativos
+
+// Referência para guardar os elementos de áudio ativos (mapa de id_do_clip -> HTMLAudioElement)
+const audioPlayersRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+
+// Referências para o contexto de áudio
+
+
+useEffect(() => {
+
+
+  if (!topAudios || topAudios.length === 0 || !isPlaying) {
+    audioPlayersRef.current.forEach(player => player.pause());
+    return;
+  }
+
+  if(isPlaying)
+    audioPlayersRef.current.forEach(player => player.play());
+
+
+
+
+
+
+  const activeIds = new Set(topAudios.map(clip => clip.id));
+
+  // 1. Remover áudios que não estão mais na agulha
+  audioPlayersRef.current.forEach((player, id) => {
+    if (!activeIds.has(id)) {
+      player.pause();
+      player.src = "";
+      audioPlayersRef.current.delete(id);
+    }
+  });
+
+  // 2. Adicionar ou atualizar áudios que devem estar tocando
+  topAudios.forEach(clip => {
+
+    if(audioPlayersRef.current.has(clip.id))
+      return
+
+    let player = audioPlayersRef.current.get(clip.id);
+
+    //images are filter in UpdateAudio so all videos are really videos no metter how knowTypeByAssetName is use
+    const audio = `${clip.name.split('.').slice(0, -1).join('.')}.mp3`
+    const path =  knowTypeByAssetName(clip.name) === 'video' ? `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/extracted_audios/${audio}`)}` :
+    `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${clip.name}`)}`
+
+    
+
+    if (!player) {
+      player = new Audio(path);
+      audioPlayersRef.current.set(clip.id, player);
+
+
+
+
+
+
+    }
+
+    // Sincronização de Tempo
+    const targetTime = (currentTime - clip.start) + (clip.beginmoment || 0);
+    
+    // Só sincroniza se a diferença for maior que 100ms para evitar engasgos
+    if (Math.abs(player.currentTime - targetTime) > 0.1) {
+      player.currentTime = targetTime;
+    }
+
+    // Controle de Play/Pause
+    if (isPlaying && player.paused) {
+      player.play().catch(e => console.warn("Autoplay de áudio bloqueado:", e));
+    } else if (!isPlaying && !player.paused) {
+      player.pause();
+    }
+  });
+}, [topAudios, currentTime, isPlaying]); 
 
 
 useEffect(() => {
@@ -310,6 +436,7 @@ useEffect(() => {
         }
       };
       img.src = frameBase64;
+         
     } catch (err) {
       console.error("Erro ao buscar frame:", err);
     }
@@ -323,8 +450,9 @@ useEffect(() => {
 useEffect(() => {
   if (isPlaying) {
     updatePreview(currentTime);
+    updateAudio(currentTime)
   }
-}, [isPlaying, currentTime]);
+}, [isPlaying, currentTime, clips]);
 
 
 useEffect(() => {
@@ -529,7 +657,7 @@ const handlePlayheadMouseDown = (e: React.MouseEvent) => {
 
     // Calculamos a posição X relativa ao container, somando o scroll
     // Subtraímos o asidetrackwidth (192 ou similar) e o padding (8) para alinhar com o início das tracks
-    const x = moveEvent.clientX - rect.left + scrollLeft - asidetrackwidth - 8;
+    const x = moveEvent.clientX - rect.left + scrollLeft - (asidetrackwidth + 15);
 
     // Definimos a nova posição (não permitindo valores negativos)
     setPlayheadPos(Math.max(0, x));
@@ -1915,8 +2043,8 @@ const order_tracks = () =>
         return a.id - b.id; // Se o tipo for igual, ordena pelo ID original
       })
 
-      console.log('tracks', tracks)
-      console.log('order tracks', tracks_order)
+      //console.log('tracks', tracks)
+      //console.log('order tracks', tracks_order)
 
       return tracks_order
 
@@ -1930,7 +2058,7 @@ const order_tracks = () =>
 const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number) => {
   if (!currentProjectPath) return;
 
-  console.log('nativedrop')
+  //console.log('nativedrop')
 
   const timelineBounds = timelineContainerRef.current?.getBoundingClientRect();
   if (!timelineBounds) return;
@@ -1951,7 +2079,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
   // last term is to calibrate with newzoom
   const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND) * (2/pixelsPerSecond);
   
-  console.log(`Mouse X: ${mouseX}, Rect Left: ${rect.left}, Scroll: ${scrollLeft}, Final Time: ${dropTime}`);
+  //console.log(`Mouse X: ${mouseX}, Rect Left: ${rect.left}, Scroll: ${scrollLeft}, Final Time: ${dropTime}`);
 
   for (const path of paths) {
     try {
@@ -1997,7 +2125,6 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
         return
       } else {
 
-          console.log('teste')
           await loadAssets();
 
           
@@ -2063,7 +2190,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
   try {
     const list = await invoke<string[]>('list_assets', { projectPath: currentProjectPath });
     
-    // Usamos .map para criar um array de promessas
+    //  .map to take name files in a array of promises
     const assetPromises = list.map(async (filename) => {
       const extension = filename.split('.').pop()?.toLowerCase();
       const filePath = `${currentProjectPath}/videos/${filename}`;
@@ -2083,6 +2210,25 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
         }
       }
 
+
+      if(type == 'video')
+      {
+         try {
+            const audioName = await invoke('extract_audio', { 
+              projectPath: currentProjectPath, 
+              fileName: filename 
+            });
+            console.log("Áudio extraído com sucesso:", audioName);
+          } catch (e) {
+            console.error("Falha na extração automática:", e);
+          }
+      }
+
+
+
+
+
+
       let thumbPath = "";
       if (type === 'image') {
         thumbPath = convertFileSrc(filePath);
@@ -2090,7 +2236,6 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
         thumbPath = await getThumbnail(currentProjectPath, filename, 2);
       }
 
-      console.log('thpah',thumbPath)
       
       return {
         name: filename,
@@ -2135,7 +2280,6 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
 
 const openProject = async (path: string) => {
 
-  console.log('path puro', path)
   localStorage.setItem("current_project_path", path);
   
   try
@@ -2213,7 +2357,6 @@ const openProject = async (path: string) => {
   clipId: string | null
 ) => {
 
-  console.log('clipid',clipId)
   // Se o clip arrastado não estiver na seleção atual, selecionamos apenas ele
   if (clipId !== null && !selectedClipIds.includes(clipId)) {
     setSelectedClipIds([clipId]);
@@ -2262,7 +2405,9 @@ const openProject = async (path: string) => {
 
   //make function split and selection
  const handleMassSplitAndSelect = (direction: 'left' | 'right') => {
-    const playheadTime = playheadPos / pixelsPerSecond;
+    const playheadTime = Math.floor(playheadPos / pixelsPerSecond);
+
+    console.log('playhead time', playheadTime)
     
     saveHistory(clips, assets);
     
@@ -2539,6 +2684,19 @@ const handleImportFile = async () => {
       }
     }
 
+    if(type != 'video')
+    {
+       try {
+          const audioName = await invoke('extract_audio', { 
+            projectPath: currentProjectPath, 
+            fileName: fileName 
+          });
+          console.log("Audio extracted", audioName);
+        } catch (e) {
+          console.error("Falha na extração automática:", e);
+        }
+    }
+
     // 6. Create the new asset object
     const newAsset: Asset = {
       name: fileName,
@@ -2550,6 +2708,8 @@ const handleImportFile = async () => {
     // 7. Update state and notify the user
     setAssets(prev => [...prev, newAsset]);
     showNotify(`Imported ${type}: ${fileName}`, "success");
+
+   
     
   } catch (err) {
     console.error(err);
@@ -2824,7 +2984,7 @@ return (
 
                     {/*<video ref={mainPlayer} playsInline  preload="metadata" muted={true}   className='absolute inset-0 w-full h-full object-cover'  />*/}
                     <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-contain" />
-
+                   
                     
                     
                     
@@ -2995,7 +3155,7 @@ return (
     {/* AGULHA (PLAYHEAD) - Agora solta dentro do container de scroll */}
     <div ref={playheadRef}
       className="absolute top-0 bottom-0 w-[2px] bg-red-600 z-[100] pointer-events-none transition-transform duration-75 ease-out" 
-      style={{ left: playheadPos + asidetrackwidth + 8 }} // +8 por causa do padding p-2 do container
+      style={{ left: playheadPos + asidetrackwidth + 15 }} // +8 por causa do padding p-2 do container
 
     >
         {/* Cabeça da agulha (Triângulo ou Círculo) */}
@@ -3057,8 +3217,8 @@ return (
             const thumbs = timelineThumbs[cacheKey];
             const assetTarget = assets.find( a => a.name === clip.name)
 
-            let margintitle = pixelsPerSecond > 30 ? -5 : -15
-            const iconSize = pixelsPerSecond > 30 ? 40 : 20
+            let margintitle = pixelsPerSecond > 30 ? -15 : -15
+            const iconSize = pixelsPerSecond > 30 ? 17 : 17
 
 
             margintitle = pixelsPerSecond > 50 ? 30 : margintitle
@@ -3099,11 +3259,15 @@ return (
               )}
 
 
-              {assetTarget?.type === 'audio' && pixelsPerSecond>10 && (
-                <div className="relative flex items-center w-[40px] m-0">
-                  <Music size={iconSize} className="text-white m-2" />
-                </div>
+              
 
+
+              {assetTarget?.type === 'audio' && pixelsPerSecond>10 && (
+                <Waveform  
+                  path={`http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${clip.name}`)}`} 
+                  color={clip.color} 
+                />
+                
               )}
 
               

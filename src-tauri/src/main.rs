@@ -24,7 +24,10 @@ use std::process::Command;
 use std::thread;
 use std::fs::File;
 use tiny_http::{Server, Response, Header};
-use std::io::{Read, Seek, SeekFrom}; 
+use std::io::{Read, Seek, SeekFrom};
+
+use std::path::Path;
+
 
 
 
@@ -386,8 +389,113 @@ async fn get_video_frame(path: String, time_ms: f64) -> Result<String, String> {
 }
 
 
-fn main() {
 
+#[tauri::command]
+async fn extract_audio(project_path: String, file_name: String) -> Result<String, String> {
+    let video_path = Path::new(&project_path).join("videos").join(&file_name);
+    let output_folder = Path::new(&project_path).join("extracted_audios");
+    
+    // Cria a pasta se não existir
+    if !output_folder.exists() {
+        fs::create_dir_all(&output_folder).map_err(|e| e.to_string())?;
+    }
+
+    // O nome do arquivo de saída será o mesmo, mas com extensão .mp3 (mais compatível)
+    let audio_file_name = format!("{}.mp3", Path::new(&file_name).file_stem().unwrap().to_str().unwrap());
+    let output_path = output_folder.join(&audio_file_name);
+
+    // Se o áudio já foi extraído, não repete o processo (performance)
+    if output_path.exists() {
+        return Ok(audio_file_name);
+    }
+
+    // Comando FFmpeg: -i (input), -vn (no video), -acodec libmp3lame (codec de áudio)
+    let status = Command::new("ffmpeg")
+        .arg("-i")
+        .arg(&video_path)
+        .arg("-vn")
+        .arg("-acodec")
+        .arg("libmp3lame")
+        .arg("-q:a")
+        .arg("2") // Qualidade alta
+        .arg(&output_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if status.status.success() {
+        Ok(audio_file_name)
+    } else {
+        let error = String::from_utf8_lossy(&status.stderr);
+        Err(format!("Erro ao extrair áudio: {}", error))
+    }
+}
+
+
+#[tauri::command]
+async fn get_waveform_data(path: String, samples: usize) -> Result<Vec<f32>, String> {
+    // Usaremos o ffmpeg para ler o áudio e cuspir dados brutos (f32)
+    let output = Command::new("ffmpeg")
+        .args([
+            "-i", &path,
+            "-ar", "8000",       // Reduz sample rate para 8kHz (suficiente para waveform)
+            "-ac", "1",          // Mono
+            "-f", "f32le",       // Float 32-bit Little Endian
+            "-",                 // Saída para o stdout
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let bytes = output.stdout;
+    let f32_data: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+        .collect();
+
+    if f32_data.is_empty() { return Ok(vec![]); }
+
+    // Reduz o array para o número de 'samples' desejado (ex: 100 picos por clip)
+    let chunk_size = f32_data.len() / samples;
+    let mut peaks = Vec::new();
+    
+    for chunk in f32_data.chunks(chunk_size.max(1)) {
+        let max = chunk.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+        peaks.push(max);
+    }
+
+    Ok(peaks)
+}
+
+fn main() {
+thread::spawn(|| {
+        let server = Server::http("127.0.0.1:1234").unwrap();
+        for request in server.incoming_requests() {
+    let url: &str = request.url();
+
+    let decoded_path = if url.len() > 1 {
+        percent_encoding::percent_decode(url[1..].as_bytes())
+            .decode_utf8_lossy()
+            .to_string()
+    } else {
+        String::new()
+    };
+
+    if let Ok(file) = File::open(&decoded_path) {
+        // 1. Criamos a resposta baseada no arquivo
+        let mut response = Response::from_file(file);
+
+        // 2. Adicionamos os headers um por um (mutando a variável response)
+        response.add_header(Header::from_bytes(&b"Content-Type"[..], &b"video/mp4"[..]).unwrap());
+        response.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+        response.add_header(Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap());
+
+
+        // 3. Respondemos
+        let _ = request.respond(response);
+    } else {
+        let _ = request.respond(Response::from_string("Not Found").with_status_code(404));
+    }
+}
+    });
 
 
     tauri::Builder::default()
@@ -395,7 +503,7 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init()) // dialog plugin
         // Custom protocol for serving local video files with range-request support
-        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project, rename_file, get_video_metadata, generate_thumbnail, delete_file, get_video_frame])
+        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project, rename_file, get_video_metadata, generate_thumbnail, delete_file, get_video_frame, extract_audio, get_waveform_data])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
