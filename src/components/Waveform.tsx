@@ -14,7 +14,7 @@ interface WaveformProps {
   const [data, setData] = useState<number[]>([]);
 
   useEffect(() => {
-    // Busca os dados do Rust apenas uma vez por clip
+    // Take datas from Rust
     invoke<number[]>('get_waveform_data', { path, samples: 200 })
       .then(setData)
       .catch(console.error);
@@ -35,7 +35,7 @@ interface WaveformProps {
       const height = peak * canvas.height;
       const x = i * barWidth;
       const y = (canvas.height - height) / 2;
-      ctx.fillRect(x, y, barWidth - 1, height); // Desenha a barra centralizada
+      ctx.fillRect(x, y, barWidth - 1, height); 
     });
   }, [data, color]);
 

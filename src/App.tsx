@@ -18,13 +18,15 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+
+//Icons for the Render
 import { 
-  // ... outros ícones que já estavam lá
+  
   Play, 
   Pause, 
   Scissors, 
-  SkipBack,    // Adicione este
-  SkipForward, // Adicione este
+  SkipBack,    
+  SkipForward, 
   LayoutGrid,
   Plus,
   Settings,
@@ -34,7 +36,7 @@ import {
   Youtube,
   Share2,
   Import,
-  ZoomIn,      // Substituindo SearchPlus
+  ZoomIn,      
   ZoomOut,
   Music,
   Sparkles,
@@ -63,12 +65,12 @@ interface Project {
 interface Clip {
   id: string;
   name: string;
-  start: number;
+  start: number; // begin of the clip in relation the timeline
   duration: number;
   color: string;
   trackId: number;
-  maxduration: number;
-  beginmoment: number;
+  maxduration: number; // max size in the timeline at current position
+  beginmoment: number; //begin of the clip in relation of all original clip (asset)
 }
 
 interface ProjectFileData {
@@ -81,10 +83,10 @@ interface ProjectFileData {
 
 interface Asset {
   name: string;
-  path: string;       // Caminho completo no sistema
-  duration: number;   // Duração real em segundos
+  path: string;       
+  duration: number;   
   type: 'video' | 'audio' | 'image';
-  thumbnailUrl?: string; // URL da imagem gerada pelo FFmpeg
+  thumbnailUrl?: string; // URL genarate by FFmpeg
 }
 
 interface Tracks
@@ -195,7 +197,7 @@ export default function App() {
 
   const clipboardRef = useRef<Clip[]>([]);
 
-  // Criamos um Wrapper para o setTracks original
+  // Wrapper to log setTracks 
   /*
   const setTracks = (newValue: any) => {
   console.group("%c SET_TRACKS DISPARADO ", "background: #222; color: #bada55; font-weight: bold;");
@@ -225,15 +227,13 @@ const lastTimeRef = useRef<number | null>(null);
 const [topClip, setTopClip] = useState<Clip | null>(null);
 const [topAudios, setTopAudios] = useState<Clip [] | null>(null);
 
-// Refs para os vídeos para controle de sincronia preciso
-const videoRefs = useRef<Record<string, HTMLVideoElement>>({});
 
 //code to video preview
 
 
-
+//function to point the track that must be showed in video preview
 const updatePreview = (currentTime: number) => {
-  // 1. Sua lógica de filtro e ordenação
+  // 1. Filter by time of playhead
 
  
 
@@ -249,6 +249,7 @@ const updatePreview = (currentTime: number) => {
     return
   }  
       
+  //2. Order as the are showed in visual render
 
   const sorted_tracks = order_tracks();
   const sortedTracksId = sorted_tracks.map(t => t.id);
@@ -261,7 +262,7 @@ const updatePreview = (currentTime: number) => {
 
 
 
-  // 2. O Vencedor (topo da pilha)
+  // 3. Set the winner
   const winner = sortedClips[0] || null;
   setTopClip(winner);
 
@@ -270,10 +271,9 @@ const updatePreview = (currentTime: number) => {
 };
 
 
-
+//show what audios to play in audio preview
 const updateAudio = (currentTime: number) => {
-  // 1. Sua lógica de filtro e ordenação
-
+  
   //filter images cause it don't has audio
 
   const currentClips = clips.filter(clip => 
@@ -300,7 +300,6 @@ const updateAudio = (currentTime: number) => {
 
 
 
-  // 2. O Vencedor (topo da pilha)
   const winner = sortedClips || null;
 
   //console.log('present audios', winner)
@@ -312,23 +311,22 @@ const updateAudio = (currentTime: number) => {
 
 };
 
-// Referência para guardar os elementos de áudio ativos (mapa de id_do_clip -> HTMLAudioElement)
-// Referência para armazenar os players ativos
 
-// Referência para guardar os elementos de áudio ativos (mapa de id_do_clip -> HTMLAudioElement)
+// Map of a lot of <audios>
 const audioPlayersRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
-// Referências para o contexto de áudio
 
-
+//Render all audios of the current time
 useEffect(() => {
 
+  //if don't have audios or is paused stop the current players
 
   if (!topAudios || topAudios.length === 0 || !isPlaying) {
     audioPlayersRef.current.forEach(player => player.pause());
     return;
   }
 
+  //play control for current players
   if(isPlaying)
     audioPlayersRef.current.forEach(player => player.play());
 
@@ -339,7 +337,7 @@ useEffect(() => {
 
   const activeIds = new Set(topAudios.map(clip => clip.id));
 
-  // 1. Remover áudios que não estão mais na agulha
+  // 1. Remove audio files that are no longer on the needle.
   audioPlayersRef.current.forEach((player, id) => {
     if (!activeIds.has(id)) {
       player.pause();
@@ -348,7 +346,7 @@ useEffect(() => {
     }
   });
 
-  // 2. Adicionar ou atualizar áudios que devem estar tocando
+  // 2. Add or update audio files that should be playing.
   topAudios.forEach(clip => {
 
     if(audioPlayersRef.current.has(clip.id))
@@ -360,6 +358,9 @@ useEffect(() => {
     const audio = `${clip.name.split('.').slice(0, -1).join('.')}.mp3`
     const path =  knowTypeByAssetName(clip.name) === 'video' ? `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/extracted_audios/${audio}`)}` :
     `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${clip.name}`)}`
+
+
+    console.log('audio path', path)
 
     
 
@@ -374,10 +375,10 @@ useEffect(() => {
 
     }
 
-    // Sincronização de Tempo
+    // Time Synchronization
     const targetTime = (currentTime - clip.start) + (clip.beginmoment || 0);
     
-    // Só sincroniza se a diferença for maior que 100ms para evitar engasgos
+    // It only synchronizes if the difference is greater than 100ms to avoid glitches.
     if (Math.abs(player.currentTime - targetTime) > 0.1) {
       player.currentTime = targetTime;
     }
@@ -388,6 +389,7 @@ useEffect(() => {
     } else if (!isPlaying && !player.paused) {
       player.pause();
     }
+      
   });
 }, [topAudios, currentTime, isPlaying]); 
 
@@ -397,7 +399,6 @@ useEffect(() => {
 }, [playheadPos])
 
 
-// Dentro do App.tsx
 
 
 useEffect(() => {
@@ -443,7 +444,7 @@ useEffect(() => {
   };
 
   drawFrame();
-}, [currentTime, topClip]); // Agora o currentTime é seu amigo, não seu inimigo!
+}, [currentTime, topClip]); 
 
 
 
@@ -507,7 +508,7 @@ useEffect(() => {
     if (!currentProjectPath) return;
 
     for (const clip of clips) {
-      // Só gera se for vídeo e se ainda não estiver no cache (ou se o tempo mudou)
+      // It only generates if it's a video and if it's not already in the cache (or if the time has changed).
       const cacheKey = `${clip.id}-${clip.beginmoment}-${clip.duration}`;
 
       const assetTarget = assets.find( a => a.name === clip.name)
@@ -538,14 +539,15 @@ useEffect(() => {
 // Delete clean tracks
 useEffect(() => {
   if (!isSetupOpen) {
-    // 1. Pega os IDs das tracks que possuem ao menos um clip
+    // 1. Get the IDs of the tracks that have at least one clip.
     const activeTrackIds = [...new Set(clips.map(c => c.trackId))];
 
-    // 2. Filtramos o array de tracks atual para manter apenas as que têm clips
-    // Ou seja, removemos as que não estão na lista de IDs ativos
+    // 2. We filter the current array of tracks to keep only those that have clips.
+    // In other words, we remove those that are not in the list of active IDs.
+
     const filteredTracks = tracks.filter(t => activeTrackIds.includes(t.id));
 
-    // 3. Verificamos se houve mudança real (comparando IDs) para evitar loops de render
+    //3. We check if there was an actual change (by comparing IDs) to avoid render loops.
     const hasChanged__ = 
       filteredTracks.length !== tracks.length || 
       tracks.some((t, i) => filteredTracks[i] && t.id !== filteredTracks[i].id);
@@ -554,7 +556,7 @@ useEffect(() => {
       setTracks(filteredTracks);
     }
   }
-}, [clips, isSetupOpen]); // 'tracks' continua fora para evitar loop infinito
+}, [clips, isSetupOpen]); 
 
 
   useEffect(() => {
@@ -593,7 +595,7 @@ useEffect(() => {
         setClips([])
         setTracks([])
         setProjectToDelete(null);
-        loadProjects(); // Recarrega a lista        
+        loadProjects(); // Reload projects list       
         showNotify("Project deleted", "success");
 
       } catch (e) {
@@ -610,23 +612,23 @@ useEffect(() => {
   if (clips.length === 0) return;
 
   const uniqueClips = clips.reduce((acc: Clip[], current) => {
-    // 1. Verifica se já existe um clip com o mesmo ID
+    // 1. Check if a clip with the same ID already exists
     const duplicateId = acc.find(c => c.id === current.id);
     
-    // 2. Verifica se já existe um clip na mesma Track e mesmo Start
+    // 2. Check if a clip already exists in the same Track and at the same Start position
     const duplicateSlot = acc.find(c => 
       c.trackId === current.trackId && c.start === current.start
     );
 
     if (duplicateId || duplicateSlot) {
-      // Se houver conflito, mantemos o que tem o menor ID (o mais antigo/original)
-      // e descartamos o de ID maior (o mais recente/duplicado)
+      // If there is a conflict, we keep the one with the smaller ID (the oldest/original)
+      // and discard the one with the larger ID (the most recent/duplicate)
       const existing = duplicateId || duplicateSlot;
       
       if (current.id > existing!.id) {
-        return acc; // Ignora o atual (maior ID)
+        return acc; // Ignore the current clip (higher ID)
       } else {
-        // Caso o atual seja menor (raro), removemos o anterior e colocamos este
+        // If the current ID is smaller (rare case), remove the previous one and add this one
         return [...acc.filter(c => c !== existing), current];
       }
     }
@@ -634,17 +636,13 @@ useEffect(() => {
     return [...acc, current];
   }, []);
 
-  // Só atualiza o estado se o tamanho do array mudou (evita loop infinito)
+  // Only update the state if the array length changed (prevents infinite loops)
   if (uniqueClips.length !== clips.length) {
     setClips(uniqueClips);
   }
 }, [clips]);
 
-
-
-
-//functon to move playhead
-
+// Function to move playhead
 const handlePlayheadMouseDown = (e: React.MouseEvent) => {
   e.preventDefault();
   e.stopPropagation();
@@ -655,11 +653,11 @@ const handlePlayheadMouseDown = (e: React.MouseEvent) => {
     const rect = timelineContainerRef.current.getBoundingClientRect();
     const scrollLeft = timelineContainerRef.current.scrollLeft;
 
-    // Calculamos a posição X relativa ao container, somando o scroll
-    // Subtraímos o asidetrackwidth (192 ou similar) e o padding (8) para alinhar com o início das tracks
+    // Calculate the X position relative to the container, including scroll offset.
+    // Subtract asidetrackwidth (192 or similar) and padding (8) to align with the start of the tracks.
     const x = moveEvent.clientX - rect.left + scrollLeft - (asidetrackwidth + 15);
 
-    // Definimos a nova posição (não permitindo valores negativos)
+    // Set the new position (preventing negative values)
     setPlayheadPos(Math.max(0, x));
   };
 
@@ -668,33 +666,21 @@ const handlePlayheadMouseDown = (e: React.MouseEvent) => {
     document.removeEventListener('mouseup', stopMoving);
   };
 
-  // Registramos os eventos no documento para que o arraste continue 
-  // mesmo se o mouse sair de cima da agulha
+  // Register events on the document so dragging continues 
+  // even if the mouse leaves the playhead area
   document.addEventListener('mousemove', movePlayhead);
   document.addEventListener('mouseup', stopMoving);
 };
 
+// This ref prevents the useEffect from saving history during an Undo/Redo operation
+const isUndoRedoAction = useRef(false);
 
+const MAX_HISTORY_STEPS = 100;
 
-
-
-
-
-
-  // This ref prevents the useEffect from saving history during an Undo/Redo operation
-  const isUndoRedoAction = useRef(false);
-
-  const MAX_HISTORY_STEPS = 100;
-
-
-
-
-    /**
-   * Adjusts the timeline scale.
-   * @param factor - Positive to zoom in, negative to zoom out
-   */
-
- 
+/**
+ * Adjusts the timeline scale.
+ * @param factor - Positive to zoom in, negative to zoom out
+ */ 
 
 
   const handleZoom = (factor: number) => {
@@ -754,11 +740,11 @@ const handleTimelineMouseDown = (e: React.MouseEvent) => {
 const handleRenameAsset = async (oldName: string, newName: string) => {
   if (!newName || oldName === newName || !currentProjectPath) return;
 
-  // Guardamos o estado anterior para reversão
+  // Store the preview state
   const previousClips = [...clips];
   const previousAssets = [...assets];
 
-  // Atualização Otimista (UI muda na hora)
+  // Update
   setClips(prev => prev.map(c => c.name === oldName ? { ...c, name: newName } : c));
   setAssets(prev => prev.map(a => a.name === oldName ? { ...a, name: newName } : a));
 
@@ -770,94 +756,66 @@ const handleRenameAsset = async (oldName: string, newName: string) => {
     showNotify("Asset renamed", "success");
   } catch (err) {
     showNotify("Error renaming file", "error");
-    // Reverte em caso de erro no backend (ex: arquivo em uso ou nome inválido)
+    // Revert in case of failure in backend
     setClips(previousClips);
     setAssets(previousAssets);
   }
 };
 
 
-const handleRenameAsset_old = async (oldName: string, newName: string) => {
-
-  const clip_now = [...clips]
-  const assets_now = [...assets]
-  
-  try {
-    
-  if (!newName || oldName === newName) return;
-
-  setClips(prevClips => prevClips.map(clip => 
-    clip.name === oldName ? { ...clip, name: newName } : clip
-  ));
-
-  setAssets(prevAssets => prevAssets.map(asset => 
-    asset.name === oldName ? {...asset, name: newName} : asset
-  ));
-
-  await invoke('rename_file', { oldPath: `${currentProjectPath}/videos/${oldName}`, newPath: `${currentProjectPath}/videos/${newName}` });
-  showNotify("Asset renamed", "success");
-
-  } catch (err) {
-    showNotify("Error renaming physical file", "error");
-    setClips(clip_now)
-    setAssets(assets_now)
-  }
-  
-
-};
 
 
 const getThumbnail = async (projectPath: string, fileName: string, requestedTime: number) => {
-  // 1. Encontrar o asset para saber o tipo e duração
+  // 1. Find the asset to determine its type and duration
   const asset = assets.find(a => a.name === fileName);
   if (!asset) return null;
 
-  // 2. Regra: Áudio não tem thumbnail
+  // 2. Rule: Audio files do not have thumbnails
   if (asset.type === 'audio') {
     return null; 
   }
 
-  // 3. Regra: Imagem a thumbnail é a própria imagem
+  // 3. Rule: For images, the thumbnail is the image itself
   if (asset.type === 'image') {
-    console.log('caminho img', asset.path)
-    return asset.path; // Retorna o caminho original
+    console.log('image path', asset.path)
+    return asset.path; // Return the original path
   }
 
-  // 4. Regra: Ajuste de tempo (se requestedTime > duração, usa tempo 0)
+  // 4. Rule: Time adjustment (if requestedTime > duration, default to time 0)
   let finalTime = requestedTime;
   if (requestedTime >= asset.duration) {
     finalTime = 0;
   }
 
   try {
-    // 5. Chama o Rust para gerar/buscar a thumbnail
+    // 5. Call Rust (Tauri command) to generate or retrieve the thumbnail
     const thumbPath = await invoke<string>('generate_thumbnail', {
       projectPath,
       fileName,
       timeSeconds: finalTime
     });
 
-    // Para exibir no HTML/React vindo do sistema de arquivos, 
-    // você pode precisar do convertFileSrc do Tauri
-    // TRANSFORMANDO O CAMINHO:
+    // To display the file in HTML/React from the local file system, 
+    // we use Tauri's convertFileSrc to get a safe URL
+    // TRANSFORMING THE PATH:
     const safeUrl = convertFileSrc(thumbPath); 
 
     console.log(safeUrl);
 
     return safeUrl
   } catch (error) {
-    console.error("Erro ao gerar thumbnail:", error);
+    console.error("Error generating thumbnail:", error);
     return null;
   }
 };
 
-//Function to copy and paste clips
+// Function to copy and paste clips
 const handleCopy = () => {
   if (selectedClipIds.length === 0) return;
   
   const selectedClips = clips.filter(c => selectedClipIds.includes(c.id));
   
-  // Atualiza o REF imediatamente (síncrono)
+  // Update the REF immediately (synchronously)
   clipboardRef.current = selectedClips;
   
   showNotify(`${selectedClips.length} clips copied`, "success");
@@ -872,45 +830,42 @@ const handlePaste = () => {
   }
 
   // Use this to measure the actual time, better than playheadPos
-
-
   let now_playheadpos = playheadRef.current?.offsetLeft - asidetrackwidth - 8
-
   
   const playheadTime = now_playheadpos / pixelsPerSecond;
   
   saveHistory(clips, assets);
 
-  // 2. Encontramos o ponto de referência (o clipe mais à esquerda do grupo copiado)
+  // 2. Find the reference point (the leftmost clip in the copied group)
   const minStart = Math.min(...clipsToPaste.map(c => c.start));
 
   let newClipsList = [...clips];
   let updatedTracks = [...tracks];
   const pastedIds: string[] = [];
 
-  // 3. Processamos a colagem
+  // 3. Process the pasting operation
   clipsToPaste.forEach(originalClip => {
-    // Calculamos o offset relativo para manter a estrutura do grupo colado
+    // Calculate relative offset to maintain the group's structure when pasted
     const relativeOffset = originalClip.start - minStart;
     
-    // O tempo de destino deve ser rigorosamente Playhead + Offset
+    // Target time must be strictly Playhead + Relative Offset
     const targetStart = playheadTime + relativeOffset;
     
     let targetTrack = originalClip.trackId;
 
-    // Função de verificação de ocupação melhorada
+    // Improved collision/occupancy check function
     const isOccupied = (tId: number, start: number, dur: number) => {
       const end = start + dur;
       return newClipsList.some(c => 
         c.trackId === tId && 
-        // Pequena margem de tolerância (0.01) para evitar falsos positivos
+        // Small tolerance margin (0.01) to avoid false positives
         start < (c.start + c.duration - 0.01) && 
         end > (c.start + 0.01)
       );
     };
 
-    // 4. Lógica de busca de track: 
-    // Só incrementa se REALMENTE houver algo no mesmo espaço de tempo E na mesma track
+    // 4. Track search logic: 
+    // Increment only if there is ACTUALLY something occupying the same time slot and track
     while (isOccupied(targetTrack, targetStart, originalClip.duration)) {
       targetTrack++;
     }
@@ -919,11 +874,11 @@ const handlePaste = () => {
     const pastedClip: Clip = {
       ...originalClip,
       id: newClipId,
-      start: targetStart, // Aplica o tempo correto aqui
+      start: targetStart, // Apply the calculated time here
       trackId: targetTrack
     };
 
-    // 5. Garante que a track existe
+    // 5. Ensure the target track exists
     if (!updatedTracks.some(t => t.id === targetTrack)) {
       const clipType = knowTypeByAssetName(pastedClip.name, true);
       updatedTracks.push({
@@ -936,7 +891,7 @@ const handlePaste = () => {
     pastedIds.push(newClipId);
   });
 
-  // 6. Ordenação final para manter a UI organizada
+  // 6. Final sorting to keep the UI organized
   const sortedTracks = updatedTracks.sort((a, b) => {
     const priority = (type: string) => (type === 'audio' ? 1 : 0);
     return priority(a.type) - priority(b.type) || a.id - b.id;
@@ -959,32 +914,27 @@ const handleTimelineMouseMove = (e: React.MouseEvent) => {
 
   setBoxEnd({ x: currentX, y: currentY });
 
-  // Cálculo do retângulo
+  // Rect calculation
   const left = Math.min(boxStart.x, currentX);
   const right = Math.max(boxStart.x, currentX);
   const top = Math.min(boxStart.y, currentY);
   const bottom = Math.max(boxStart.y, currentY);
 
-  // Detetar clips dentro do retângulo
+  // Detect clips inside the selection box
   const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
 
-  
-  //Organize tracks as the are in the render to know its order
+  // Organize tracks as they are rendered to determine their order
   const tracksid = order_tracks().map((track) => ( track.id)) 
 
-
-  
   const collidingClips = clips.filter(clip => {
-
 
     const indexofTrack = tracksid.indexOf(clip.trackId)
 
     const clipLeft = 200 + (clip.start * pixelsPerSecond) - scrollLeft ;
     const clipRight = clipLeft + (clip.duration * pixelsPerSecond);
-    const clipTop = ( (indexofTrack+1) * 64) + 30; // 64px altura track + margem ruler
+    const clipTop = ( (indexofTrack+1) * 64) + 30; // 64px track height + ruler margin
     const clipBottom = clipTop + 60;
 
-    
     return (
       clipRight > left &&
       clipLeft < right &&
@@ -992,19 +942,14 @@ const handleTimelineMouseMove = (e: React.MouseEvent) => {
       clipTop < bottom
     );
 
-
-
   }).map(c => c.id);
 
-  
   setSelectedClipIds(collidingClips);
 };
 
 const handleTimelineMouseUp = () => {
   setIsBoxSelecting(false);
 };
-
-
 
 
   //logic to zoom with scroll
@@ -1176,7 +1121,7 @@ const handleTimelineMouseUp = () => {
 
 const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
   const { minStart, maxEndTimestamp } = getClipBoundaries(id);
-  const deltaSeconds = deltaX / PIXELS_PER_SECOND; // Remova o 0.2 se quiser precisão real do mouse
+  const deltaSeconds = deltaX / PIXELS_PER_SECOND; // Remove 0.2 if you want raw mouse precision
 
   setClips(prev => prev.map(clip => {
     if (clip.id !== id) return clip;
@@ -1185,7 +1130,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
     const isImage = asset?.type === 'image';
 
     if (side === 'right') {
-      // Se for imagem, o limite é apenas o próximo clip. Se for vídeo, é o fim do arquivo.
+      // If it's an image, the limit is only the next clip. If it's video, it's the end of the file.
       const remainingAssetTime = isImage ? Infinity : (clip.maxduration - (clip.beginmoment + clip.duration));
       
       const maxPossibleExpansion = Math.min(
@@ -1193,7 +1138,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
         maxEndTimestamp - (clip.start + clip.duration)
       );
 
-      // Nova duração (mínimo de 0.1s para não sumir)
+      // New duration (minimum of 0.1s to prevent the clip from disappearing)
       const addedDuration = Math.max(-clip.duration + 0.1, Math.min(deltaSeconds, maxPossibleExpansion));
       
       return { 
@@ -1202,37 +1147,32 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
       };
 
     } else {
-      // LADO ESQUERDO
+      // LEFT SIDE (Trimming start)
       const maxRetractionTimeline = clip.start - minStart;
-      // Se for imagem, pode expandir para a esquerda infinitamente (até o clip anterior)
+      // If it's an image, it can expand left infinitely (until the previous clip)
       const maxRetractionAsset = isImage ? Infinity : clip.beginmoment;
 
       const maxLeftExpansion = Math.min(maxRetractionTimeline, maxRetractionAsset);
 
       let safeDelta = Math.max(-maxLeftExpansion, deltaSeconds);
 
-      // Evita encolher demais
+      // Prevent shrinking too much (minimum 0.1s duration)
       if (safeDelta > clip.duration - 0.1) safeDelta = clip.duration - 0.1;
 
       return {
         ...clip,
         start: clip.start + safeDelta,
         duration: clip.duration - safeDelta,
-        // Imagens não progridem no "tempo interno", então beginmoment só muda para vídeos
+        // Images don't progress in "internal time", so beginmoment only changes for videos
         beginmoment: isImage ? 0 : clip.beginmoment + safeDelta
       };
     }
   }));
 };
 
-
-
-
   // Code to make the clip resizable 
 
-
-
-  //function to help handleResize cause Drag won't work because the Drag of Parent Element
+  // Function to help handleResize because standard Drag won't work due to Parent Element's Drag
   const startResizing = (e: React.MouseEvent, clipId: string, side: 'left' | 'right') => {
     e.preventDefault();
     e.stopPropagation();
@@ -1240,27 +1180,23 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
     const startX = e.clientX;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
-      // Calcula quanto o mouse moveu desde o clique inicial
+      // Calculate how much the mouse has moved since the initial click
       const deltaX = moveEvent.clientX - startX;
       
-      // Chama sua função (que já está correta!)
+      // Call the resize handler
       handleResize(clipId, deltaX, side);
     };
 
     const onMouseUp = () => {
-      // Limpa os eventos quando soltar o mouse
+      // Clean up event listeners when the mouse is released
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
-
-      
     };
 
+    // Register events on the document to allow resizing even if the mouse leaves the handle area
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
   };
-
-
-
 
 
   // Effect to handle automatic saving whenever project data changes
@@ -1460,7 +1396,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
 
         //Space (Player Needle move)  
         if (e.code === 'Space') {
-          e.preventDefault(); // Impede o scroll da página
+          e.preventDefault(); // stop o scroll page
           togglePlay();
         }
 
@@ -1540,7 +1476,7 @@ const handleSplit = () => {
 
   console.log('playheadtime', playheadTime)
 
-  // 1. Encontrar clips sob a agulha
+  // 1. Find  clips at playhead
   const clipsAtPlayhead = clips.filter(c => 
     playheadTime > c.start && 
     playheadTime < (c.start + c.duration)
@@ -1548,7 +1484,7 @@ const handleSplit = () => {
 
   let targetClip: Clip | undefined;
 
-  // 2. Lógica de Seleção
+  // 2. Selection logic
   if (selectedClipIds.length > 0) {
     targetClip = clipsAtPlayhead.find(c => selectedClipIds.includes(c.id));
 
@@ -1573,9 +1509,10 @@ const handleSplit = () => {
 
   saveHistory(clips, assets);
 
-  // --- LÓGICA DE CÁLCULO DE TEMPO ---
+  // --- TIME CALCULATION LOGIC ---
 
-  // Quanto tempo passou desde o início do CLIP na timeline até a agulha
+  // How much time has passed from the start of the CLIP on the timeline until the needle...
+
   const timeOffsetFromClipStart = playheadTime - targetClip.start;
 
   // Primeira parte: mantém o beginmoment original, mas encurta a duração
@@ -1583,11 +1520,10 @@ const handleSplit = () => {
     ...targetClip, 
     duration: timeOffsetFromClipStart 
   };
-
-  // Segunda parte: 
-  // - O start na timeline é a posição da agulha.
-  // - A duração é o que restava do clip original.
-  // - O novo beginmoment é o original + o tempo que "andamos" dentro do clip.
+// Second part:
+// - The start point on the timeline is the needle position.
+// - The duration is what remained of the original clip.
+// - The new begin moment is the original + the time we "travel" within the clip.
   new Promise(resolve => setTimeout(resolve, 1));
 
   const secondClip: Clip = { 
@@ -1602,9 +1538,9 @@ const handleSplit = () => {
     ...prev.filter(c => c.id !== targetClip!.id),
     firstClip,
     secondClip
-  ].sort((a, b) => a.start - b.start)); // Boa prática manter ordenado
+  ].sort((a, b) => a.start - b.start)); // Keep in order
 
-  // Atualiza a seleção para o novo clip criado (parte da direita)
+  //Default behavor: Select Right
   setSelectedClipIds([secondClip.id]);
   showNotify("Clip split!", "success");
 };
@@ -1673,7 +1609,6 @@ const handleSplit = () => {
     let unlisten: (() => void) | undefined;
 
     const setupDropListener = async () => {
-      // Armazena a função de desinscrição retornada pela Promise
       const unsubscribe = await getCurrentWindow().onDragDropEvent((event) => {
         if (event.payload.type === 'drop') {
           const { paths, position } = event.payload;
@@ -1996,7 +1931,7 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
   
   const relativeY = e.clientY - container.top;
-  const x = e.clientX - container.left + scrollLeft + 200;
+  const x = e.clientX - container.left + scrollLeft  //+ 200;
 
   //last term to calibrate with  zoom
   const dropTime = Math.max(0, x / PIXELS_PER_SECOND) * (2/pixelsPerSecond);
@@ -2005,7 +1940,7 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   const totalTracksHeight = tracks.length * TRACK_HEIGHT;
   const margin = 20;
 
-  // Se soltar acima ou abaixo, a função centralizada resolve
+  // If drop above or below, but close a new track is created
   
   if (relativeY < -margin) {
     createClipOnNewTrack(assetName, dropTime);
@@ -2031,16 +1966,16 @@ const order_tracks = () =>
   const tracks_order= tracks.filter(t => activeTracksId.includes(t.id)).sort(
 
       (a, b) => {
-        // Definimos pesos: Video/Effects = 0 (topo), Audio = 1 (baixo)
+        // We set the weights: Video/Effects = 0 (top), Audio = 1 (bottom)
         const priority = (type: string) => (type === 'audio' ? 1 : 0);
 
         const pA = priority(a.type);
         const pB = priority(b.type);
 
         if (pA !== pB) {
-          return pA - pB; // Se os tipos forem diferentes, ordena pelo peso
+          return pA - pB; // If different types, order by type
         }
-        return a.id - b.id; // Se o tipo for igual, ordena pelo ID original
+        return a.id - b.id; // If the type is the same, sort by the original ID.
       })
 
       //console.log('tracks', tracks)
@@ -2069,13 +2004,15 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
 
   const rect = timelineContainerRef.current.getBoundingClientRect();
   
-  // 1. Diferença entre o clique e o início da área visível da timeline
-  // Usamos Math.floor para evitar sub-pixels que causam drifts
+  // 1. Difference between the click and the beginning of the visible timeline area
+  // We use Math.floor to avoid sub-pixels that cause drifts
   const scrollLeft = timelineContainerRef.current.scrollLeft;
-  // 2. Ajuste: Se você tiver uma sidebar de tracks (ex: 200px), subtraia aqui
-  const trackSidebarWidth = 0; // Altere se houver uma barra lateral interna à timeline
+  
+  
+  // 2. Adjustment: If you have a sidebar of tracks (e.g., 200px), subtract here.
+  const trackSidebarWidth = 0; // Change this if there is a sidebar inside the timeline.
   const relativeX = mouseX - rect.left - trackSidebarWidth + scrollLeft;
-  // 3. Cálculo do tempo com o valor atualizado de PIXELS_PER_SECOND
+  //3. Calculating the time using the updated value of PIXELS_PER_SECOND
   // last term is to calibrate with newzoom
   const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND) * (2/pixelsPerSecond);
   
@@ -2100,7 +2037,6 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       
       const duration = meta.duration
 
-      // Lógica de detecção de Track
       const TRACK_HEIGHT = 80;
       const relativeY = mouseY - timelineBounds.top;
       const targetTrackIndex = Math.floor(relativeY / TRACK_HEIGHT);
@@ -2111,7 +2047,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
 
 
 
-      // Se soltar abaixo da última track existente, cria uma nova
+      // If you drop it below the last existing track, it creates a new one.
 
 
       const isBusy = (isSpaceOccupied(tracks_order[targetTrackIndex].id, dropTime, Math.min(duration, 10), null))
@@ -2246,7 +2182,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       } as Asset;
     });
 
-    // Aguarda todas as metadatas serem lidas em paralelo
+    // Wait for all metadata to be read in parallel.
     const resolvedAssets = await Promise.all(assetPromises);
     
     if (resolvedAssets.length > 0) {
@@ -2297,18 +2233,18 @@ const openProject = async (path: string) => {
     setAssets(parsed.assets || []);
     setProjectName(parsed.projectName || "Unnamed Project");
 
-    // 1. Encontrar o ID máximo de track de forma segura
+    // 1. Find the maximum track ID securely.
     const maxTrackId = (parsed.clips || []).reduce((max, clip) => 
       clip.trackId > max ? clip.trackId : max, 
       0
     );
 
-    // 2. Gerar o array de tracks baseado nos objetos {id, type}
+    // 2. Generate the array of tracks based on the {id, type} objects.
     const newTracks = Array.from({ length: maxTrackId + 1 }, (_, id) => {
-      // Busca o primeiro clip desta track para definir o tipo
+      // Find the first clip of this track to determine the type.
       const firstClip = parsed.clips.find(c => c.trackId === id);
 
-      // Se a track tiver clip, descobre o tipo. Se estiver vazia, define como 'video' por padrão.
+      // If the track has clips, it determines the type. If it's empty, it defaults to 'video'.
       const trackType = firstClip 
         ? (knowTypeByAssetName(firstClip.name, true) as 'video' | 'audio' | 'effects')
         : 'video';
@@ -2357,7 +2293,7 @@ const openProject = async (path: string) => {
   clipId: string | null
 ) => {
 
-  // Se o clip arrastado não estiver na seleção atual, selecionamos apenas ele
+  // If the dragged clip is not in the current selection, we select only that clip.
   if (clipId !== null && !selectedClipIds.includes(clipId)) {
     setSelectedClipIds([clipId]);
   }
@@ -2368,16 +2304,16 @@ const openProject = async (path: string) => {
 
   if (isTimelineClip && start !== null) {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    // Calcula quantos segundos existem entre o início do clip e onde o mouse clicou
+    // Calculate how many seconds there are between the start of the clip and where the mouse clicked.
     const clickOffset = (e.clientX - rect.left) / pixelsPerSecond;
     e.dataTransfer.setData("clickOffset", clickOffset.toString());
   } else {
-    // Para novos assets vindos da barra lateral, geralmente clicamos no início ou centro
-    // Podemos definir como 0 ou calcular se desejar
+    // For new assets coming from the sidebar, we usually click at the beginning or center
+    // // We can set it to 0 or calculate it if desired
     e.dataTransfer.setData("clickOffset", "0");
   }
 
-  // Guardamos os dados do clip "âncora" (o que o mouse pegou)
+  // Store clips datas
   e.dataTransfer.setData("assetName", assetName);
   e.dataTransfer.setData("isTimelineClip", isTimelineClip.toString());
 
@@ -2390,7 +2326,7 @@ const openProject = async (path: string) => {
   if (isTimelineClip && clipId !== null) {
     setDeleteClipId(clipId);
     
-    // Guardamos o tempo de início do clip âncora para calcular o deslocamento dos outros
+    // Store start time of the clip
     const anchorClip = clips.find(c => c.id === clipId);
     if (anchorClip) {
       e.dataTransfer.setData("anchorStart", anchorClip.start.toString());
@@ -2411,12 +2347,10 @@ const openProject = async (path: string) => {
     
     saveHistory(clips, assets);
     
-    // 1. Criamos um novo array para processar
     let processedClips: Clip[] = [];
     
-    // Precisamos percorrer todos os clips existentes
     clips.forEach(clip => {
-        // Se o clip está sob a agulha, dividimos
+        // If chick is in the playhead we divide it
         if (playheadTime > clip.start && playheadTime < (clip.start + clip.duration)) {
             const firstPartDuration = playheadTime - clip.start;
             const secondPartDuration = clip.duration - firstPartDuration;
@@ -2429,7 +2363,6 @@ const openProject = async (path: string) => {
                
             const secondClip: Clip = { 
                 ...clip, 
-                // Geramos um ID que garante unicidade mesmo dentro de um loop rápido
                 id: crypto.randomUUID(), 
                 start: playheadTime, 
                 duration: secondPartDuration,
@@ -2438,20 +2371,20 @@ const openProject = async (path: string) => {
 
             processedClips.push(firstClip, secondClip);
         } else {
-            // Se não está sob a agulha, apenas mantemos o clip como está
+            // If it is not in playhead, keep the file
             processedClips.push(clip);
         }
     });
 
-    // 2. Ordenamos para garantir consistência
+    // Order the clips
     processedClips.sort((a, b) => a.start - b.start);
 
-    // 3. Atualizar o estado dos clips
     setClips(processedClips);
 
-    // 4. Lógica de Seleção:
-    // Para 'left': selecionamos clips que terminam antes ou exatamente na agulha
-    // Para 'right': selecionamos clips que começam a partir da agulha
+    //  Selection Logic:
+
+    // For 'left': we select clips that end before or exactly at the needle
+    // For 'right': we select clips that start from the needle
     const selectedIds = processedClips
         .filter(c => {
             if (direction === 'left') {
@@ -2509,23 +2442,21 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   const anchorStart = parseFloat(e.dataTransfer.getData("anchorStart") || "0");
   const assetName = e.dataTransfer.getData("assetName");
   
-  // PEGUE O OFFSET AQUI
+  // Take offset
   const clickOffset = parseFloat(e.dataTransfer.getData("clickOffset") || "0");
   
   const rect = e.currentTarget.getBoundingClientRect();
   const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
   
-  // 1. Posição absoluta do mouse no tempo
+  // 1. Mouse position convert to time
   const mouseTime = (e.clientX - rect.left + scrollLeft) / pixelsPerSecond;
   
-  // 2. O tempo real de drop é o mouse menos onde você "agarrou" o clip
+  // 2. The actual drop time is the mouse minus where "grabbed" the clip.
   const rawDropTime = mouseTime - clickOffset; 
   
-  // Aplica o Snap a partir do início real do clip
   const dropTime = getSnappedTime(rawDropTime, deleteClipId, trackId);
 
-    // --- SUA NOVA FUNÇÃO DE ESPAÇO OCUPADO ---
-  
+    
 
 
   saveHistory(clips, assets);
@@ -2535,10 +2466,10 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   const anchorClip = clips.find(c => c.id === deleteClipId);
   const trackOffset = anchorClip ? trackId - anchorClip.trackId : 0;
 
-  // 1. Clips que NÃO estão na seleção (ficam parados)
+  // 1. Clips that are NOT in the selection (remain paused)
   const otherClips = clips.filter(c => !selectedClipIds.includes(c.id));
   
-  // 2. Calculamos a nova posição de todos os selecionados
+  // 2. We calculate the new position of all selected players.
   const tracksid = tracks.map( t => t.id)
   let maxTrackId = Math.max(...tracksid, trackId);
   
@@ -2550,7 +2481,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
 
       const trackChoose = tracks.find( t => t.id === targetTrack)
 
-      // Se houver colisão, jogamos para uma track acima das existentes
+      //If there is a collision, we move the vehicle to a track above the existing ones.
       if (isSpaceOccupied(targetTrack, targetStart, clip.duration, clip.id) || trackChoose?.type !==  knowTypeByAssetName(clip.name,true)) {
         maxTrackId++;
         targetTrack = maxTrackId;
@@ -2563,10 +2494,10 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
       };
     });
 
-  // 3. ATUALIZAÇÃO ÚNICA: Une os clips parados com os novos movidos
+  // 3. ONE-TIME UPDATE: Merges the still clips with the newly moved ones
   setClips([...otherClips, ...finalMovedClips]);
   
-  // 4. Garante que o estado 'tracks' conheça a nova track se ela foi criada
+  //4. Ensures that the 'tracks' state knows about the new track if it has been created.
   if (maxTrackId > Math.max(...tracksid)) {
     //setTracks(prev => [...new Set([...prev, maxTrackId])].sort((a,b) => a-b)); old logic
     
@@ -2577,7 +2508,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
 
     setTracks(prev => {
       const allTracks = [...prev, ...newTracksCreated];
-      // Remove duplicatas comparando o ID real
+      // Remove duplicates by comparing the actual ID
       const uniqueTracks = allTracks.filter((track, index, self) =>
         index === self.findIndex((t) => t.id === track.id)
       );
@@ -2588,11 +2519,11 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     // (Asset -> Timeline) 
     const assetName = e.dataTransfer.getData("assetName");
     //if no have space useeffect with comment 'avoid clip over another'
-    // 1. Tenta encontrar o asset correspondente
+    // 1. Try to find the corresponding asset.
     const assetNow = assets.find(a => a.name === assetName);
     
-    // 2. Define a duração padrão com segurança
-    // Se assetNow existir e for > 10, usa 10. Senão usa a duração dele ou 5 (fallback total)
+    // 2. Set the default duration safely.
+    // If assetNow exists and is greater than 10, use 10. Otherwise, use its duration or 5 (total fallback).
     const defaultDuration = assetNow ? Math.min(assetNow.duration, 10) : 10;
     const totalMaxDuration = assetNow ? assetNow.duration : 10;
 
@@ -2604,7 +2535,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     if(!isBusy || !isNotType)
     {
        const newClip: Clip = {
-          id: crypto.randomUUID(), // ID mais seguro
+          id: crypto.randomUUID(), 
           name: assetName,
           start: dropTime,
           duration: defaultDuration,
@@ -2863,7 +2794,7 @@ return (
                   className="h-3 w-full bg-[#161616]/50 backdrop-blur-xl border border-white/5 rounded-2xl py-3 pl-12 pr-12 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-red-600/30 focus:bg-[#1a1a1a] transition-all duration-300"
                 />
 
-                {/* Botão de Limpar (Aparece só quando tem texto) */}
+                {/* Search Query */}
                 <AnimatePresence>
                   {searchQuery && (
                     <motion.button
@@ -2882,7 +2813,7 @@ return (
                   {filteredAssets.length > 0 ? (
                     filteredAssets.map((asset, index) => (
                       <motion.div
-                        key={asset.path} // Certifique-se que asset.path seja único
+                        key={asset.path} 
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: index * 0.05 }}
@@ -2892,7 +2823,7 @@ return (
                         draggable="true"
                         onDragStart={(e) => handleDragStart(e, null, null, null, asset.name, false, null)}
                       >
-                        {/* Thumbnail: Renderiza se não for áudio E se houver URL */}
+                        {/* Thumbnail: Only for not audio (video and images ) */}
                         {asset.type !== 'audio' && asset.thumbnailUrl && (
                           <img 
                             src={asset.thumbnailUrl} 
@@ -2901,7 +2832,7 @@ return (
                           />
                         )}
 
-                        {/* Estado para Áudio */}
+                        {/* For Audio */}
                         {asset.type === 'audio' && (
                           <div className="absolute inset-0 flex items-center justify-center bg-[#121212]">
                             <Music 
@@ -2914,32 +2845,32 @@ return (
                         {/* Gradient Overlay */}
                         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/40 opacity-100" />
 
-                        {/* Badge de Duração (Não mostra para imagens) */}
+                        {/* Duration Badge (Don't show for images) */}
                         {asset.type !== 'image' && asset.duration && (
                           <div className="absolute bottom-2 right-2 bg-black/70 backdrop-blur-md px-1.5 py-0.5 rounded text-[10px] font-mono text-white">
                             {formatTime(asset.duration)}
                           </div>
                         )}
 
-                        {/* Ícone de Tipo */}
+                        {/* Icon Type */}
                         <div className="absolute top-2 left-2 p-1 bg-black/50 backdrop-blur-sm rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
                           {asset.type === 'video' && <Play size={12} className="text-white" />}
                           {asset.type === 'audio' && <Music size={12} className="text-white" />}
                           {asset.type === 'image' && <ImageIcon size={12} className="text-white" />}
                         </div>
 
-                        {/* Nome do Arquivo */}
+                        {/* File Name */}
                         <div className="absolute bottom-2 left-2 right-12 opacity-0 group-hover:opacity-100 transition-opacity">
                           <p className="text-[10px] text-white truncate font-medium drop-shadow-lg" contentEditable
                           suppressContentEditableWarning={true}
                           onDoubleClick={(e) => {
-                            // Garante que o texto seja selecionado ao dar duplo clique
+                            // Ensures that text is selected when double-clicking.
                             e.stopPropagation();
                           }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
                               e.preventDefault();
-                              (e.target as HTMLElement).blur(); // Dispara o onBlur
+                              (e.target as HTMLElement).blur(); //  onBlur
                             }
 
                             if (e.key === 'Escape') {
@@ -2956,7 +2887,7 @@ return (
                           </p>
                         </div>
                       </motion.div>
-                    )) // Fechamento correto do .map
+                    )) 
                   ) : (
                     /* Empty State */
                     <div className="col-span-full py-20 text-center">
@@ -2982,7 +2913,6 @@ return (
                   >
                    
 
-                    {/*<video ref={mainPlayer} playsInline  preload="metadata" muted={true}   className='absolute inset-0 w-full h-full object-cover'  />*/}
                     <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-contain" />
                    
                     
@@ -3073,7 +3003,7 @@ return (
               </div>
 
 
-                {/* Dentro da div da Toolbar, junto com Scissors, Snap, etc */}
+                {/* Buttons of Split and Select */}
                 <div className="flex items-center gap-1 border-l border-zinc-800 ml-4 pl-4">
                   <button 
                     onClick={() => handleMassSplitAndSelect('left')}
@@ -3152,24 +3082,24 @@ return (
     </div>
   </div>
 
-    {/* AGULHA (PLAYHEAD) - Agora solta dentro do container de scroll */}
+    {/* PLAYHEAD - Now released inside the scroll container. */}
     <div ref={playheadRef}
       className="absolute top-0 bottom-0 w-[2px] bg-red-600 z-[100] pointer-events-none transition-transform duration-75 ease-out" 
       style={{ left: playheadPos + asidetrackwidth + 15 }} // +8 por causa do padding p-2 do container
 
     >
-        {/* Cabeça da agulha (Triângulo ou Círculo) */}
+        {/* Needle head (Triangle or Circle) */}
         <div onMouseDown={handlePlayheadMouseDown}  className="w-4 h-4 bg-red-600 rounded-b-full shadow-[0_0_10px_rgba(220,38,38,0.5)] -ml-[7px]" />
     </div>
 
  
 
-    {/* Renderização das Tracks (Seu código de sort e map aqui) */}
+    {/* Track Rendering (Your sort and map code here) */}
     {Array.from(
-  // 1. Cria um Map usando o id como chave para eliminar duplicatas
+  // 1. Create a Map using the ID as the key to eliminate duplicates.
   new Map(tracks.map((t) => [t.id, t])).values()
 )
-  // 2. Ordena as tracks únicas
+  // 2. Sort the unique tracks
   .sort((a, b) => {
     const priority = (type: string) => (type === "audio" ? 1 : 0);
     const pA = priority(a.type);
@@ -3180,11 +3110,11 @@ return (
     }
     return a.id - b.id;
   })
-  // 3. Mapeia para o componente
+  // 3. Maps to the component
   .map((track) => (
       <div key={track.id} className="flex gap-2 group">
         
-        {/* ASIDE: Controles da Track */}
+        {/* ASIDE: Icons Track and id */}
         <div  ref={asidetrack} className="w-48 shrink-0 bg-zinc-900/40 border border-zinc-800/40 rounded-md flex items-center px-3 gap-3">
           <div className="w-8 h-8 rounded bg-white/5 flex items-center justify-center text-zinc-400 group-hover:text-white transition-colors">
             {track.type === 'audio' && <Music size={14} />}
@@ -3202,7 +3132,7 @@ return (
           </div>
         </div>
 
-        {/* ÁREA DE DROPS: Onde os clips ficam */}
+        {/* DROPS AREA: Where is the Clips stay */}
         <div 
           onDragOver={handleDragOver}
           onDrop={(e) => handleDropOnTimeline(e, track.id)}
@@ -3241,7 +3171,7 @@ return (
               }}
             >
 
-              {/* Thumbnail de Início (Fundo) */}
+              {/* Start Thumbnail for video */}
               {thumbs?.start && assetTarget?.type === 'video' && (
                 <img 
                   src={thumbs.start} 
@@ -3249,6 +3179,8 @@ return (
                   alt=""
                 />
               )}
+
+              {/* Thumbnail of image */}
 
               {assetTarget?.type === 'image' && (
                 <img 
@@ -3274,7 +3206,7 @@ return (
 
 
 
-              {/* Thumbnail de Fim (Fundo) */}
+              {/* End Thumbnail video */}
               {thumbs?.end && assetTarget?.type === 'video' && (
                 <img 
                   src={thumbs.end} 
@@ -3341,7 +3273,9 @@ return (
       </div>
     )}
 
-    {/* MODALS - Mantidos para consistência */}
+    {/* MODALS  */}
+
+    {/* Modal to create new project */}
     <AnimatePresence>
       {isCreatingNew && (
         <div className="fixed inset-0 bg-black/95 z-[300] flex items-center justify-center p-4">
