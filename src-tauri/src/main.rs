@@ -29,6 +29,11 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 
+//use tauri::std::process::Command;
+use tauri_plugin_shell::ShellExt;
+use tauri::Manager;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 
 
@@ -44,8 +49,20 @@ pub struct VideoMetadata {
     duration: f64,
 }
 
-use tauri_plugin_shell::ShellExt;
+use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Clip {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub start: f64,    // Position on timeline (seconds)
+    pub duration: f64, // Length of the cut (seconds)
+    pub beginmoment: f64, // Start point inside the original file (seconds)
+    pub trackId: i32,
+    #[serde(rename = "type")]
+    pub clip_type: String, // video, audio, or image
+}
 
 
 #[tauri::command]
@@ -55,29 +72,36 @@ async fn generate_thumbnail(
     file_name: String,
     time_seconds: f64
 ) -> Result<String, String> {
-    // Caminhos conforme sua estrutura
+
+    let thumbnail_folder = std::path::Path::new(&project_path).join("thumbnails");
+    
+    // Create folder if does not exist
+    if !thumbnail_folder.exists() {
+        std::fs::create_dir_all(&thumbnail_folder).map_err(|e| e.to_string())?;
+    }
+    // Paths based on project structure
     let video_path = PathBuf::from(&project_path).join("videos").join(&file_name);
     let output_name = format!("{}-{}.png", file_name, time_seconds);
     let output_path = PathBuf::from(&project_path).join("thumbnails").join(&output_name);
 
-    // Se a thumbnail já existir, não precisa gerar de novo
+    // If the thumbnail already exists, skip generation to save resources
     if output_path.exists() {
         return Ok(output_path.to_string_lossy().into_owned());
     }
 
-    // Executa o Sidecar FFmpeg
-    // -ss: busca rápida pelo tempo / -i: input / -frames:v 1: tira um print / -q:v 2: qualidade
+    // Execute FFmpeg Sidecar
+    // -ss: fast seek to timestamp / -i: input / -frames:v 1: capture one frame / -q:v 2: quality level
     let sidecar_command = app_handle
         .shell()
         .sidecar("ffmpeg")
         .map_err(|e| e.to_string())?
         .args([
-            "-ss", &time_seconds.to_string(), // Busca o tempo
-            "-i", &video_path.to_string_lossy(), // Input
-            "-frames:v", "1", // Apenas 1 frame
-            "-update", "1",   // ESSENCIAL: Diz que é uma imagem única, não uma sequência
-            "-y",             // Sobrescreve se já existir (opcional, mas evita travamentos)
-            &output_path.to_string_lossy(), // Caminho de saída
+            "-ss", &time_seconds.to_string(), // Seek to specific time
+            "-i", &video_path.to_string_lossy(), // Input source
+            "-frames:v", "1", // Grab exactly 1 frame
+            "-update", "1",   // ESSENTIAL: Specifies a single image output rather than a sequence
+            "-y",             // Overwrite if exists (prevents hanging on prompts)
+            &output_path.to_string_lossy(), // Output path
         ]);
 
     let output = sidecar_command.output().await.map_err(|e| e.to_string())?;
@@ -89,22 +113,76 @@ async fn generate_thumbnail(
     }
 }
 
+fn build_complex_filter(clips: &[Clip]) -> String {
+    let mut filters = Vec::new();
+    let mut inputs = Vec::new();
+
+    for (i, clip) in clips.iter().enumerate() {
+        // Trim the source file and reset timestamps to the timeline start
+        // [vX] represents the video stream of the current clip
+        let filter = format!(
+            "[{}:v]trim=start={}:duration={},setpts=PTS-STARTPTS+{}/TB[v{}]",
+            i, clip.beginmoment, clip.duration, clip.start, i
+        );
+        filters.push(filter);
+        inputs.push(format!("[v{}]", i));
+    }
+
+    // Merge all video streams into one using overlay or concat
+    // For simple linear editing, we use concat. For tracks, we would use overlay.
+    let concat = format!("{}concat=n={}:v=1:a=0[outv]", inputs.join(""), clips.len());
+    filters.push(concat);
+
+    filters.join(";")
+}
+
 #[tauri::command]
-async fn export_video(app_handle: tauri::AppHandle, name: String ,output_path: String, filter_complex: String) -> Result<String, String> {
-    // Busca o binário do ffmpeg que configuramos no sidecar
+async fn export_video(
+    app_handle: tauri::AppHandle,
+    project_path: String,
+    export_path: String,
+    clips: Vec<Clip> 
+) -> Result<(), String> {
+    // Resolve the FFmpeg path using the Manager trait
+    let ffmpeg_resource = app_handle.path().resource_dir()
+        .map_err(|e| e.to_string())?
+        .join("bin/ffmpeg");
 
-    let filename = format!("{}.mp4", name);
-    let sidecar_command = app_handle
-        .shell()
-        .sidecar("ffmpeg")
-        .unwrap()
-        .args(["-i",&filename, "-filter_complex", &filter_complex, &output_path]);
+    let filter_string = build_complex_filter(&clips);
 
-    let (mut _rx, mut _child) = sidecar_command
-        .spawn()
+    // Prepare the command arguments
+    let mut args = Vec::new();
+    
+    // Add all input files
+    for clip in &clips {
+        args.push("-i".to_string());
+        args.push(clip.path.clone());
+    }
+
+    args.extend([
+        "-filter_complex".to_string(),
+        filter_string,
+        "-map".to_string(),
+        "[outv]".to_string(),
+        "-c:v".to_string(),
+        "libx264".to_string(),
+        "-preset".to_string(),
+        "ultrafast".to_string(), //  High speed for testing
+        "-y".to_string(),
+        export_path
+    ]);
+
+    //  Execute and monitor process
+    let output = std::process::Command::new(ffmpeg_resource)
+        .args(args)
+        .output()
         .map_err(|e| e.to_string())?;
 
-    Ok("Render Beggin".into())
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
 }
 
 
@@ -117,7 +195,7 @@ fn list_project_files(project_path: String) -> Result<Vec<String>, String> {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .filter(|name| name.ends_with(".project"))
         .collect();
-    files.sort(); // Sort by timestamp in name
+    files.sort(); // Sort by name (timestamp-based sorting)
     Ok(files)
 }
 
@@ -160,8 +238,7 @@ fn save_project_data(project_path: String, data: String, timestamp: u64) -> Resu
     Ok(())
 }
 
-
-//function to load that last state of project
+// Function to load the last saved state of the project
 #[tauri::command]
 fn load_latest_project(project_path: String) -> Result<String, String> {
     let paths = fs::read_dir(project_path).map_err(|e| e.to_string())?;
@@ -182,19 +259,18 @@ fn load_latest_project(project_path: String) -> Result<String, String> {
     }
 }
 
-
 #[tauri::command]
 fn load_specific_project(project_path: String, file_name: String) -> Result<String, String> {
-    // 1. Constrói o caminho completo: project_path/file_name
+    // 1. Construct the full path: project_path/file_name
     let mut path = PathBuf::from(&project_path);
     path.push(&file_name);
 
-    // 2. Verifica se o arquivo existe e é um arquivo de verdade
+    // 2. Validate that the file exists and is indeed a file
     if !path.exists() {
-        return Err(format!("Arquivo não encontrado: {}", file_name));
+        return Err(format!("File not found: {}", file_name));
     }
 
-    // 3. Lê o conteúdo e retorna como String (JSON)
+    // 3. Read content and return as String (JSON)
     fs::read_to_string(path).map_err(|e| e.to_string())
 }
 
@@ -215,7 +291,6 @@ async fn download_youtube_video(project_path: String, url: String) -> Result<Str
         ])
         .output()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
-
 
     if output.status.success() {
         Ok("Download completed successfully".into())
@@ -272,8 +347,6 @@ fn create_project_folder(root_path: String, project_name: String) -> Result<Stri
     Ok(path.to_string_lossy().into_owned())
 }
 
-
-
 #[tauri::command]
 fn list_projects(root_path: String) -> Result<Vec<Project>, String> {
     let mut projects = Vec::new();
@@ -292,7 +365,6 @@ fn list_projects(root_path: String) -> Result<Vec<Project>, String> {
     Ok(projects)
 }
 
-
 #[tauri::command]
 fn delete_project(path: String) -> Result<(), String> {
     let project_path = std::path::PathBuf::from(path);
@@ -309,13 +381,12 @@ fn rename_file(old_path: String, new_path: String) -> Result<(), String> {
     fs::rename(old_path, new_path).map_err(|e| e.to_string())
 }
 
-
 #[tauri::command]
 fn delete_file(path: String) -> Result<(), String> {
-    // Usamos PathBuf para consistência com suas outras funções como 'import_asset'
+    // We use PathBuf for consistency with other functions like 'import_asset'
     let path_buf = std::path::PathBuf::from(&path);
 
-    // 1. Verificações de segurança
+    // 1. Safety checks
     if !path_buf.exists() {
         return Err("File path not found".to_string());
     }
@@ -324,46 +395,30 @@ fn delete_file(path: String) -> Result<(), String> {
         return Err("The provided path is not a file".to_string());
     }
 
-    // 2. Execução da deleção
+    // 2. Execute deletion
     fs::remove_file(path_buf).map_err(|e| format!("Failed to delete file: {}", e))?;
 
     Ok(())
 }
 
-
-
 #[command]
 async fn get_video_metadata(path: String) -> Result<VideoMetadata, String> {
+    // Command: ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 path
+    let output = Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            &path,
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
 
-// Comando: ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 path
+    let duration_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let duration = duration_str.parse::<f64>().map_err(|_| "Failed to parse duration")?;
 
-let output = Command::new("ffprobe")
-
-.args([
-"-v", "error",
-"-show_entries", "format=duration",
-"-of", "default=noprint_wrappers=1:nokey=1",
-
-&path,
-
-])
-
-.output()
-
-.map_err(|e| e.to_string())?;
-
-
-
-let duration_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-let duration = duration_str.parse::<f64>().map_err(|_| "Failed to parse duration")?;
-
-
-
-Ok(VideoMetadata { duration })
-
+    Ok(VideoMetadata { duration })
 }
-
 
 use opencv::{prelude::*, videoio, core, imgcodecs};
 use base64::{engine::general_purpose, Engine as _};
@@ -373,7 +428,7 @@ async fn get_video_frame(path: String, time_ms: f64) -> Result<String, String> {
     let mut cam = videoio::VideoCapture::from_file(&path, videoio::CAP_ANY)
         .map_err(|e| e.to_string())?;
     
-    // Move o "ponteiro" do vídeo para o milissegundo desejado
+    // Move the video seek pointer to the desired millisecond
     cam.set(videoio::CAP_PROP_POS_MSEC, time_ms).map_err(|e| e.to_string())?;
     
     let mut frame = core::Mat::default();
@@ -384,32 +439,30 @@ async fn get_video_frame(path: String, time_ms: f64) -> Result<String, String> {
         let b64 = general_purpose::STANDARD.encode(buffer.as_slice());
         Ok(format!("data:image/jpeg;base64,{}", b64))
     } else {
-        Err("Não foi possível ler o frame".into())
+        Err("Unable to read the video frame".into())
     }
 }
-
-
 
 #[tauri::command]
 async fn extract_audio(project_path: String, file_name: String) -> Result<String, String> {
     let video_path = Path::new(&project_path).join("videos").join(&file_name);
     let output_folder = Path::new(&project_path).join("extracted_audios");
     
-    // Cria a pasta se não existir
+    // Create directory if it doesn't exist
     if !output_folder.exists() {
         fs::create_dir_all(&output_folder).map_err(|e| e.to_string())?;
     }
 
-    // O nome do arquivo de saída será o mesmo, mas com extensão .mp3 (mais compatível)
+    // Output filename will be the same as input, but with .mp3 extension (for compatibility)
     let audio_file_name = format!("{}.mp3", Path::new(&file_name).file_stem().unwrap().to_str().unwrap());
     let output_path = output_folder.join(&audio_file_name);
 
-    // Se o áudio já foi extraído, não repete o processo (performance)
+    // If audio is already extracted, skip to improve performance
     if output_path.exists() {
         return Ok(audio_file_name);
     }
 
-    // Comando FFmpeg: -i (input), -vn (no video), -acodec libmp3lame (codec de áudio)
+    // FFmpeg Command: -i (input), -vn (no video), -acodec libmp3lame (audio codec)
     let status = Command::new("ffmpeg")
         .arg("-i")
         .arg(&video_path)
@@ -417,7 +470,7 @@ async fn extract_audio(project_path: String, file_name: String) -> Result<String
         .arg("-acodec")
         .arg("libmp3lame")
         .arg("-q:a")
-        .arg("2") // Qualidade alta
+        .arg("2") // High quality setting
         .arg(&output_path)
         .output()
         .map_err(|e| e.to_string())?;
@@ -426,21 +479,21 @@ async fn extract_audio(project_path: String, file_name: String) -> Result<String
         Ok(audio_file_name)
     } else {
         let error = String::from_utf8_lossy(&status.stderr);
-        Err(format!("Erro ao extrair áudio: {}", error))
+        Err(format!("Error extracting audio: {}", error))
     }
 }
 
 
 #[tauri::command]
 async fn get_waveform_data(path: String, samples: usize) -> Result<Vec<f32>, String> {
-    // Usaremos o ffmpeg para ler o áudio e cuspir dados brutos (f32)
+    // Use ffmpeg to read audio and output raw data (f32)
     let output = Command::new("ffmpeg")
         .args([
             "-i", &path,
-            "-ar", "8000",       // Reduz sample rate para 8kHz (suficiente para waveform)
-            "-ac", "1",          // Mono
-            "-f", "f32le",       // Float 32-bit Little Endian
-            "-",                 // Saída para o stdout
+            "-ar", "8000",       // Reduce sample rate to 8kHz (sufficient for waveform visualization)
+            "-ac", "1",          // Convert to Mono
+            "-f", "f32le",       // Format as Float 32-bit Little Endian
+            "-",                 // Direct output to stdout
         ])
         .output()
         .map_err(|e| e.to_string())?;
@@ -453,11 +506,12 @@ async fn get_waveform_data(path: String, samples: usize) -> Result<Vec<f32>, Str
 
     if f32_data.is_empty() { return Ok(vec![]); }
 
-    // Reduz o array para o número de 'samples' desejado (ex: 100 picos por clip)
+    // Downsample the array to the desired number of 'samples' (e.g., 100 peaks per clip)
     let chunk_size = f32_data.len() / samples;
     let mut peaks = Vec::new();
     
     for chunk in f32_data.chunks(chunk_size.max(1)) {
+        // Calculate the absolute peak value for the current chunk
         let max = chunk.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
         peaks.push(max);
     }
@@ -466,44 +520,61 @@ async fn get_waveform_data(path: String, samples: usize) -> Result<Vec<f32>, Str
 }
 
 fn main() {
-thread::spawn(|| {
+    thread::spawn(|| {
         let server = Server::http("127.0.0.1:1234").unwrap();
         for request in server.incoming_requests() {
-    let url: &str = request.url();
+            let url: &str = request.url();
 
-    let decoded_path = if url.len() > 1 {
-        percent_encoding::percent_decode(url[1..].as_bytes())
-            .decode_utf8_lossy()
-            .to_string()
-    } else {
-        String::new()
-    };
+            let decoded_path = if url.len() > 1 {
+                percent_encoding::percent_decode(url[1..].as_bytes())
+                    .decode_utf8_lossy()
+                    .to_string()
+            } else {
+                String::new()
+            };
 
-    if let Ok(file) = File::open(&decoded_path) {
-        // 1. Criamos a resposta baseada no arquivo
-        let mut response = Response::from_file(file);
+            if let Ok(file) = File::open(&decoded_path) {
+                // 1. Create a response based on the file stream
+                let mut response = Response::from_file(file);
 
-        // 2. Adicionamos os headers um por um (mutando a variável response)
-        response.add_header(Header::from_bytes(&b"Content-Type"[..], &b"video/mp4"[..]).unwrap());
-        response.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
-        response.add_header(Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap());
+                // 2. Add headers individually (mutating the response variable)
+                response.add_header(Header::from_bytes(&b"Content-Type"[..], &b"video/mp4"[..]).unwrap());
+                response.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+                response.add_header(Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap());
 
-
-        // 3. Respondemos
-        let _ = request.respond(response);
-    } else {
-        let _ = request.respond(Response::from_string("Not Found").with_status_code(404));
-    }
-}
+                // 3. Send the response
+                let _ = request.respond(response);
+            } else {
+                let _ = request.respond(Response::from_string("Not Found").with_status_code(404));
+            }
+        }
     });
-
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_dialog::init()) // dialog plugin
+        .plugin(tauri_plugin_dialog::init()) // Dialog plugin for system file pickers
         // Custom protocol for serving local video files with range-request support
-        .invoke_handler(tauri::generate_handler![create_project_folder, list_projects, delete_project, import_asset, list_assets, download_youtube_video, load_latest_project, save_project_data,list_project_files, read_specific_file, load_specific_project, rename_file, get_video_metadata, generate_thumbnail, delete_file, get_video_frame, extract_audio, get_waveform_data])
+        .invoke_handler(tauri::generate_handler![
+            create_project_folder, 
+            list_projects, 
+            delete_project, 
+            import_asset, 
+            list_assets, 
+            download_youtube_video, 
+            load_latest_project, 
+            save_project_data,
+            list_project_files, 
+            read_specific_file, 
+            load_specific_project, 
+            rename_file, 
+            get_video_metadata, 
+            generate_thumbnail, 
+            delete_file, 
+            get_video_frame, 
+            extract_audio, 
+            get_waveform_data
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

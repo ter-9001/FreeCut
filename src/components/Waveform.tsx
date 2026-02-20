@@ -39,7 +39,7 @@ interface WaveformProps {
     });
   }, [data, color]);
 
-  return <canvas ref={canvasRef} className="w-full h-full opacity-40 pointer-events-none " />;
+  return <canvas ref={canvasRef} className="w-full h-full opacity-100 pointer-events-none " />;
 };
 
 export default Waveform;

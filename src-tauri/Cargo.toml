@@ -30,3 +30,4 @@ percent-encoding = "2.3"
 tiny_http = "0.12"
 opencv = "0.92"
 base64 = "0.21"
+tokio = { version = "1", features = ["full"] }

@@ -262,6 +262,8 @@ const updatePreview = (currentTime: number) => {
 
 
 
+
+
   // 3. Set the winner
   const winner = sortedClips[0] || null;
   setTopClip(winner);
@@ -284,7 +286,7 @@ const updateAudio = (currentTime: number) => {
 
   if (currentClips.length == 0)
   {
-    setTopClip(null)
+    setTopAudios(null)
     return
   }  
       
@@ -354,6 +356,7 @@ useEffect(() => {
 
     let player = audioPlayersRef.current.get(clip.id);
 
+
     //images are filter in UpdateAudio so all videos are really videos no metter how knowTypeByAssetName is use
     const audio = `${clip.name.split('.').slice(0, -1).join('.')}.mp3`
     const path =  knowTypeByAssetName(clip.name) === 'video' ? `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/extracted_audios/${audio}`)}` :
@@ -367,6 +370,7 @@ useEffect(() => {
     if (!player) {
       player = new Audio(path);
       audioPlayersRef.current.set(clip.id, player);
+     
 
 
 
@@ -421,6 +425,9 @@ useEffect(() => {
     const clipTimeMs = ((currentTime - topClip.start) + (topClip.beginmoment || 0)) * 1000;
     const path = `${currentProjectPath}/videos/${topClip.name}`;
 
+    console.log('current time', currentTime)
+    console.log('cliptimems', clipTimeMs)
+
     try {
       // call function in rust to generate frames
       const frameBase64: string = await invoke('get_video_frame', { 
@@ -457,8 +464,18 @@ useEffect(() => {
 
 
 useEffect(() => {
-  setCurrentTime(playheadPos/pixelsPerSecond)
+  //setCurrentTime(playheadPos/pixelsPerSecond)
 }, [playheadPos])
+
+
+
+const lastUpdateRef = useRef<number>(0); // Acumulador para o controle de 10fps
+const playheadPosRef = useRef(playheadPos); 
+
+
+
+
+
 
 
  const animate = (time: number) => {
@@ -481,6 +498,43 @@ useEffect(() => {
   lastTimeRef.current = time;
   requestRef.current = requestAnimationFrame(animate);
 };
+
+/*
+
+const animate = (time: number) => {
+  if (lastTimeRef.current !== null) {
+    const deltaTime = (time - lastTimeRef.current) / 1000;
+    
+    // Atualizamos o valor REAL (acumulado) na Ref
+    // Isso garante que o cálculo não se perca entre as renderizações
+    playheadPosRef.current += deltaTime * PIXELS_PER_SECOND;
+
+    // 3. O "Filtro" de 10 vezes por segundo (Throttling)
+    if (time - lastUpdateRef.current > 100) { // 100ms = 10Hz
+      
+      // Agora sim, atualizamos o estado com o valor da Ref
+      setPlayheadPos(playheadPosRef.current);
+      
+      lastUpdateRef.current = time;
+
+      // Auto-scroll (pode ficar aqui dentro para economizar CPU)
+      if (timelineContainerRef.current) {
+        const container = timelineContainerRef.current;
+        const scrollRight = container.scrollLeft + container.clientWidth;
+        if (playheadPosRef.current > scrollRight - 50) {
+          container.scrollLeft += 10; 
+        }
+      }
+    }
+  }
+  
+  lastTimeRef.current = time;
+  requestRef.current = requestAnimationFrame(animate);
+};
+
+
+*/
+
 
 useEffect(() => {
   if (isPlaying) {
@@ -1931,7 +1985,7 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
   
   const relativeY = e.clientY - container.top;
-  const x = e.clientX - container.left + scrollLeft  //+ 200;
+  const x = e.clientX - container.left - 200;
 
   //last term to calibrate with  zoom
   const dropTime = Math.max(0, x / PIXELS_PER_SECOND) * (2/pixelsPerSecond);
@@ -2034,6 +2088,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       {
         meta = {duration: 10}
       }
+
       
       const duration = meta.duration
 
@@ -2042,18 +2097,30 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       const targetTrackIndex = Math.floor(relativeY / TRACK_HEIGHT);
 
       //Organize tracks as the are in the render to know its order
-      const tracks_order= order_tracks()
+      const tracks_order = order_tracks()
+
+      
 
 
 
+      // If you drop it below the last or above the tracks area, it creates a new one.
 
-      // If you drop it below the last existing track, it creates a new one.
+
+
+      if(!tracks_order[targetTrackIndex])
+      {
+        await loadAssets();
+        createClipOnNewTrack(fileName, dropTime)
+        return
+      }
 
 
       const isBusy = (isSpaceOccupied(tracks_order[targetTrackIndex].id, dropTime, Math.min(duration, 10), null))
       const isNotType = tracks_order[targetTrackIndex].type !== knowTypeByAssetName(fileName,true)
 
-      //console.log('empty var', tracks_order[targetTrackIndex], isBusy, isNotType, targetTrackIndex >= tracks.length , targetTrackIndex)
+      console.log('empty var', tracks_order[targetTrackIndex], isBusy, isNotType, targetTrackIndex >= tracks.length , targetTrackIndex)
+
+      //check if drop on a empty place again and if the place is on a track but is busy or is not the clip's type 
 
       if ((targetTrackIndex >= tracks.length || targetTrackIndex < 0) ||  isBusy  || isNotType) {
         await loadAssets();
@@ -2449,7 +2516,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
   
   // 1. Mouse position convert to time
-  const mouseTime = (e.clientX - rect.left + scrollLeft) / pixelsPerSecond;
+  const mouseTime = (e.clientX - rect.left + 0) / pixelsPerSecond;
   
   // 2. The actual drop time is the mouse minus where "grabbed" the clip.
   const rawDropTime = mouseTime - clickOffset; 
@@ -3064,9 +3131,10 @@ return (
       className="flex-1 relative h-8 border-b border-white/5 cursor-pointer overflow-hidden"
       onMouseDown={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
-        const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-        const newPos = e.clientX - rect.left + scrollLeft - (pixelsPerSecond/20); //calibration
+        //const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
+        const newPos = e.clientX - rect.left  - (pixelsPerSecond/20); //calibration
         setPlayheadPos(newPos);
+        //playheadPosRef.current = newPos
       }}
 
     >
@@ -3157,12 +3225,12 @@ return (
 
             
             return (
-            <motion.div 
+              <motion.div 
               key={clip.id} layoutId={clip.id}
               draggable="true"
               onDragStart={(e) => handleDragStart(e, clip.color, track.id, clip.duration, clip.name, true, clip.id)}
               onClick={(e) => { e.stopPropagation(); toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey); }}
-              className={`absolute inset-y-1.5 ${clip.color} rounded-md flex items-center shadow-lg cursor-grab active:cursor-grabbing border-2 ${
+              className={`absolute  inset-y-1.5 ${clip.color} rounded-md flex items-center shadow-lg cursor-grab active:cursor-grabbing border-2 ${
                 selectedClipIds.includes(clip.id) ? 'border-white ring-4 ring-white/10 z-30' : 'border-black/20'
               }`}
               style={{
@@ -3170,59 +3238,40 @@ return (
                 width: clip.duration * pixelsPerSecond,
               }}
             >
+              {/* 1. Waveform - Ocupando o fundo proporcionalmente */}
+              {assetTarget?.type === 'audio' && (
+                <div className="absolute inset-0 w-full h-full overflow-hidden pointer-events-none">
+                  <Waveform  
+                    path={`${currentProjectPath}/videos/${clip.name}`} 
+                    color="rgba(255, 255, 255, 0.3)" // Cor clara e semi-transparente sobre o fundo colorido
+                  />
+                </div>
+              )}
 
-              {/* Start Thumbnail for video */}
+              {/* Thumbnails (Video/Image) */}
               {thumbs?.start && assetTarget?.type === 'video' && (
-                <img 
-                  src={thumbs.start} 
-                  className="absolute left-0 top-0 h-full w-16 object-cover opacity-80 pointer-events-none border-r border-white/10" 
-                  alt=""
-                />
+                <img src={thumbs.start} className="absolute left-0 top-0 h-full w-16 object-cover opacity-80 pointer-events-none border-r border-white/10" alt="" />
               )}
-
-              {/* Thumbnail of image */}
-
               {assetTarget?.type === 'image' && (
-                <img 
-                  src={convertFileSrc(`${currentProjectPath}/videos/${clip.name}`)} 
-                  className="absolute left-0 top-0 h-full w-16 object-cover opacity-80 pointer-events-none border-r border-white/10" 
-                  alt=""
-                />
+                <img src={convertFileSrc(`${currentProjectPath}/videos/${clip.name}`)} className="absolute left-0 top-0 h-full w-16 object-cover opacity-80 pointer-events-none border-r border-white/10" alt="" />
               )}
-
-
-              
-
-
-              {assetTarget?.type === 'audio' && pixelsPerSecond>10 && (
-                <Waveform  
-                  path={`http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${clip.name}`)}`} 
-                  color={clip.color} 
-                />
-                
-              )}
-
-              
-
-
-
-              {/* End Thumbnail video */}
               {thumbs?.end && assetTarget?.type === 'video' && (
-                <img 
-                  src={thumbs.end} 
-                  className="absolute right-0 top-0 h-full w-16 object-cover opacity-80 pointer-events-none border-l border-white/10" 
-                  alt=""
-                />
+                <img src={thumbs.end} className="absolute right-0 top-0 h-full w-16 object-cover opacity-80 pointer-events-none border-l border-white/10" alt="" />
               )}
 
-
-              <div className="absolute left-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'left')} />
-              <div className="px-3 w-full" style={{ marginLeft: margintitle}}>
-                <p className="truncate ... text-[9px] font-black text-white uppercase italic leading-none drop-shadow-md w-[90%]"
+              {/* 2. Container Central do Título */}
+              {/* Justify-start com um padding-left coloca o texto centralizado porém "pendendo" para a esquerda */}
+              <div className="relative flex items-center justify-start w-full h-full px-4 overflow-hidden pointer-events-none">
+                <p 
+                  className="text-[9px] font-black text-white uppercase italic leading-none drop-shadow-lg truncate max-w-[80%]"
+                  style={{ marginLeft: assetTarget?.type === 'audio' ? '0' : '64px' }} // Ajusta se houver thumbnail
                 >
                   {clip.name}
                 </p>
               </div>
+
+              {/* Handles de Redimensionamento */}
+              <div className="absolute left-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'left')} />
               <div className="absolute right-0 inset-y-0 w-1.5 cursor-ew-resize hover:bg-white/40 z-10" onMouseDown={(e) => startResizing(e, clip.id, 'right')} />
             </motion.div>
           )})}
