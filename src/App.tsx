@@ -274,7 +274,7 @@ const updatePreview = (currentTime: number) => {
 
 
 //show what audios to play in audio preview
-const updateAudio = (currentTime: number) => {
+const updateAudio = () => {
   
   //filter images cause it don't has audio
 
@@ -291,6 +291,7 @@ const updateAudio = (currentTime: number) => {
   }  
       
 
+  /*
   const sorted_tracks = order_tracks();
   const sortedTracksId = sorted_tracks.map(t => t.id);
 
@@ -299,15 +300,26 @@ const updateAudio = (currentTime: number) => {
     const trackB = sortedTracksId.indexOf(b.trackId);
     return trackA - trackB;
   });
+  
+  */
+  
 
 
 
-  const winner = sortedClips || null;
+  const winner = currentClips || null;
 
   //console.log('present audios', winner)
 
-  winner !== topAudios ? setTopAudios(winner) : null
 
+  const idsAtuais = topAudios?.map(c => c.id).join(',');
+  const idsNovos = winner?.map(c => c.id).join(',');
+
+  if (idsAtuais !== idsNovos) {
+    setTopAudios(winner);
+  }
+
+
+  
 
   
 
@@ -317,11 +329,14 @@ const updateAudio = (currentTime: number) => {
 // Map of a lot of <audios>
 const audioPlayersRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
-
 //Render all audios of the current time
-useEffect(() => {
+
+
+const renderAudio = () => {
 
   //if don't have audios or is paused stop the current players
+
+  ///console.log('use efect audio')
 
   if (!topAudios || topAudios.length === 0 || !isPlaying) {
     audioPlayersRef.current.forEach(player => player.pause());
@@ -338,6 +353,7 @@ useEffect(() => {
 
 
   const activeIds = new Set(topAudios.map(clip => clip.id));
+  
 
   // 1. Remove audio files that are no longer on the needle.
   audioPlayersRef.current.forEach((player, id) => {
@@ -351,9 +367,6 @@ useEffect(() => {
   // 2. Add or update audio files that should be playing.
   topAudios.forEach(clip => {
 
-    if(audioPlayersRef.current.has(clip.id))
-      return
-
     let player = audioPlayersRef.current.get(clip.id);
 
 
@@ -363,28 +376,23 @@ useEffect(() => {
     `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${clip.name}`)}`
 
 
-    console.log('audio path', path)
+    //console.log('audio path', path)
 
     
 
     if (!player) {
+      console.log('player created')
       player = new Audio(path);
       audioPlayersRef.current.set(clip.id, player);
-     
-
-
-
-
-
-
     }
 
     // Time Synchronization
     const targetTime = (currentTime - clip.start) + (clip.beginmoment || 0);
     
     // It only synchronizes if the difference is greater than 100ms to avoid glitches.
-    if (Math.abs(player.currentTime - targetTime) > 0.1) {
+    if (Math.abs(player.currentTime - targetTime) > 0.3 ) {
       player.currentTime = targetTime;
+      
     }
 
     // Controle de Play/Pause
@@ -394,19 +402,27 @@ useEffect(() => {
       player.pause();
     }
       
-  });
-}, [topAudios, currentTime, isPlaying]); 
+  })
+
+
+
+}
+
+
+
+
+
 
 
 useEffect(() => {
   setCurrentTime(playheadPos/pixelsPerSecond)
+  
 }, [playheadPos])
 
 
 
 
-useEffect(() => {
-  const drawFrame = async () => {
+  const drawFrame = async (time: number) => {
     if (!canvasRef.current) return;
     
     const ctx = canvasRef.current.getContext('2d');
@@ -422,11 +438,11 @@ useEffect(() => {
     }
 
     // time in miliseconds
-    const clipTimeMs = ((currentTime - topClip.start) + (topClip.beginmoment || 0)) * 1000;
+    const clipTimeMs = ((time - topClip.start) + (topClip.beginmoment || 0)) * 1000;
     const path = `${currentProjectPath}/videos/${topClip.name}`;
 
-    console.log('current time', currentTime)
-    console.log('cliptimems', clipTimeMs)
+//    console.log('current time', currentTime)
+  //  console.log('cliptimems', clipTimeMs)
 
     try {
       // call function in rust to generate frames
@@ -448,52 +464,63 @@ useEffect(() => {
     } catch (err) {
       console.error("Erro ao buscar frame:", err);
     }
-  };
-
-  drawFrame();
-}, [currentTime, topClip]); 
+  }
 
 
 
 useEffect(() => {
   if (isPlaying) {
     updatePreview(currentTime);
-    updateAudio(currentTime)
+    drawFrame(currentTime)
+    updateAudio()
+
+    
+
+
+   
+
   }
 }, [isPlaying, currentTime, clips]);
 
 
+
 useEffect(() => {
-  //setCurrentTime(playheadPos/pixelsPerSecond)
-}, [playheadPos])
+
+    console.log('render audio up')
+    renderAudio()
+
+}, [isPlaying, topAudios])
+
 
 
 
 const lastUpdateRef = useRef<number>(0); // Acumulador para o controle de 10fps
-const playheadPosRef = useRef(playheadPos); 
+
+const currentTimeRef = useRef(0);
 
 
-
-
-
-
-
- const animate = (time: number) => {
+const animate = (time: number) => {
   if (lastTimeRef.current !== null) {
-    const deltaTime = (time - lastTimeRef.current) / 1000; // seconds passed
+    const deltaTime = (time - lastTimeRef.current) / 1000;
     
-    setPlayheadPos(prev => {
-      const nextPos = prev + (deltaTime * PIXELS_PER_SECOND);
-      // Timeline Auto-scroll to follow playhead
-      if (timelineContainerRef.current) {
-        const container = timelineContainerRef.current;
-        const scrollRight = container.scrollLeft + container.clientWidth;
-        if (nextPos > scrollRight - 50) {
-          container.scrollLeft += 5; // Scroll suave
-        }
-      }
-      return nextPos;
-    });
+    // 1. Atualiza a REF (é aqui que o tempo realmente "anda")
+    currentTimeRef.current += deltaTime;
+    const currentPos = currentTimeRef.current * pixelsPerSecond;
+
+    // 2. Move a agulha via DOM
+    if (playheadRef.current) {
+      playheadRef.current.style.transform = `translateX(${currentPos}px)`;
+    }
+
+
+
+
+   
+    // 3. Atualiza o estado do cronômetro apenas as vezes
+    if (time - lastUpdateRef.current > 100) {
+      setCurrentTime(currentTimeRef.current); 
+      lastUpdateRef.current = time;
+    }
   }
   lastTimeRef.current = time;
   requestRef.current = requestAnimationFrame(animate);
@@ -533,8 +560,8 @@ const animate = (time: number) => {
 };
 
 
-*/
 
+*/
 
 useEffect(() => {
   if (isPlaying) {
@@ -746,16 +773,16 @@ const MAX_HISTORY_STEPS = 100;
 
 
       ///code to make the playhead on the same position (time)
-      const pixelsFromLeft = playheadRef.current.offsetLeft - asidetrackwidth - 8;
-      console.log("Pixels via offsetLeft:", pixelsFromLeft);
+      const pixelsFromLeft = playheadRef.current.offsetLeft  - asidetrackwidth - 8;
+     // console.log("Pixels via offsetLeft:", pixelsFromLeft);
 
 
       const variation = newZoom / (prev == 0 ? 1 : prev)
       const delta = (newZoom - prev)
-      console.log("var", prev, factor, variation, playheadPos)
-      console.log("delta", delta, factor)
+     // console.log("var", prev, factor, variation, playheadPos)
+     // console.log("delta", delta, factor)
 
-      setPlayheadPos( pixelsFromLeft * variation );
+      playheadRef.current.style.transform = `translateX${pixelsFromLeft * variation}px`;
 
       timelineContainerRef.current.scrollLeft = factor < 0 ? 0 : pixelsFromLeft
 
@@ -764,13 +791,18 @@ const MAX_HISTORY_STEPS = 100;
     });
 
 
-
-    
-
-
-
-
   };
+
+
+
+  useEffect(() => {
+  // Whenever the zoom changes, we visually reposition the needle.
+  if (playheadRef.current) {
+    const currentPos = currentTimeRef.current * pixelsPerSecond;
+    playheadRef.current.style.transform = `translateX(${currentPos}px)`;
+  }
+}, [pixelsPerSecond]);
+
 
 //functions to make the Box Selection
 const handleTimelineMouseDown = (e: React.MouseEvent) => {
@@ -831,7 +863,6 @@ const getThumbnail = async (projectPath: string, fileName: string, requestedTime
 
   // 3. Rule: For images, the thumbnail is the image itself
   if (asset.type === 'image') {
-    console.log('image path', asset.path)
     return asset.path; // Return the original path
   }
 
@@ -854,8 +885,7 @@ const getThumbnail = async (projectPath: string, fileName: string, requestedTime
     // TRANSFORMING THE PATH:
     const safeUrl = convertFileSrc(thumbPath); 
 
-    console.log(safeUrl);
-
+    
     return safeUrl
   } catch (error) {
     console.error("Error generating thumbnail:", error);
@@ -1262,8 +1292,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
 
     const saveProject = async () => {
       // DO NOT save if the project hasn't finished loading yet
-      console.log(clips)
-
+     
       if (!isProjectLoaded || !currentProjectPath) return;
 
       
@@ -1494,22 +1523,37 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
     }, [selectedClipIds, selectedAssets , clips, isSnapEnabled, assets, history, redoStack]);
 
 
-    /**
-     * Moves the playhead to a specific X position and updates the state
-     * @param clientX Raw mouse X coordinate
-     */
-    const seekTo = (clientX: number) => {
-      if (!timelineContainerRef.current) return;
+// Function to synchronize currentTime with currentTimeRef 
+  const seekTo = (newTime: number) => {
+  
+    currentTimeRef.current = newTime;
+  
+    // 2. Update state so React is aware of the current position (for the timer, etc.)
+    setCurrentTime(newTime);
+
+    // 3. Move the playhead visually via DOM immediately for better performance
+    if (playheadRef.current) {
+      const nextPos = newTime * pixelsPerSecond;
+      playheadRef.current.style.transform = `translateX(${nextPos}px)`;
+    }
+
+    // 4. If playback is paused, force a frame draw on the Canvas
+    if (!isPlaying) {
+      drawFrame(newTime);
       
-      const rect = timelineContainerRef.current.getBoundingClientRect();
-      const scrollLeft = timelineContainerRef.current.scrollLeft;
+      // 5. Synchronize audio for "Scrubbing" (optional)
+      /*
       
-      // Calculate X relative to the timeline content
-      const newX = clientX - rect.left + scrollLeft;
-      
-      // Ensure the playhead doesn't go into negative values
-      setPlayheadPos(Math.max(0, newX));
-    };
+      audioPlayersRef.current.forEach((player, id) => {
+        const clip = tracks.flatMap(t => t.clips).find(c => c.id === id);
+        if (clip) {
+          // Calculate the internal audio time relative to the timeline position
+          player.currentTime = (newTime - clip.start) + (clip.beginmoment || 0);
+        }
+      });
+      */
+    }
+  };
 
 
     /**
@@ -1528,7 +1572,7 @@ const handleSplit = () => {
   const playheadTime = playheadPos / pixelsPerSecond;
 
 
-  console.log('playheadtime', playheadTime)
+  //console.log('playheadtime', playheadTime)
 
   // 1. Find  clips at playhead
   const clipsAtPlayhead = clips.filter(c => 
@@ -1543,7 +1587,6 @@ const handleSplit = () => {
     targetClip = clipsAtPlayhead.find(c => selectedClipIds.includes(c.id));
 
 
-    console.log('targetclipstart', targetClip)
     
     if (!targetClip) {
       showNotify("Selected clip is not under the playhead", "error");
@@ -1910,17 +1953,29 @@ const knowTypeByAssetName = (assetName: string, typeTrack: boolean = false) =>
 }
 
 
-const createClipOnNewTrack = (assetName: string, dropTime: number) => {
+const createClipOnNewTrack =  async (assetName: string, dropTime: number) => {
     
   
+  var meta;
+
+  const path = `${currentProjectPath}/videos/${assetName}`
+  
+  try
+  {
+    meta = await invoke<{duration: number}>('get_video_metadata', { path: path });
     
-    setTracks(prev => 
+  }
+  catch (err)
+  {
+    meta = {duration: 10}
+  }
+    
+    setTracks(  (prev) => 
       {
   
           const newTrackId = prev.length > 0 ? Math.max(...prev.map(t => t.id)) + 1 : 0; 
    
-          console.log('new id track', newTrackId)
-
+         
           const type = knowTypeByAssetName(assetName, true);
 
           const updatedTracks = [...prev, { 
@@ -1928,9 +1983,17 @@ const createClipOnNewTrack = (assetName: string, dropTime: number) => {
             type: type as 'video' | 'audio' | 'effects' 
           }];
 
-          const refAsset = assets.find(a => a.name === assetName);
           const deleteClip = clips.find(c => c.id === deleteClipId);
 
+        
+
+        
+        const duration = meta.duration
+
+
+
+          //console.log('maxduration in new trakc set to ', duration )
+          
           const newClip: Clip = {
             id: crypto.randomUUID(),
             name: assetName,
@@ -1938,7 +2001,7 @@ const createClipOnNewTrack = (assetName: string, dropTime: number) => {
             duration: deleteClip ? deleteClip.duration : 10,
             color: getRandomColor(),
             trackId: newTrackId,
-            maxduration: refAsset && refAsset.type !== 'image' ? refAsset.duration : 10,
+            maxduration: duration,
             beginmoment: deleteClip ? deleteClip.beginmoment : 0
           };
 
@@ -2118,7 +2181,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       const isBusy = (isSpaceOccupied(tracks_order[targetTrackIndex].id, dropTime, Math.min(duration, 10), null))
       const isNotType = tracks_order[targetTrackIndex].type !== knowTypeByAssetName(fileName,true)
 
-      console.log('empty var', tracks_order[targetTrackIndex], isBusy, isNotType, targetTrackIndex >= tracks.length , targetTrackIndex)
+      //console.log('empty var', tracks_order[targetTrackIndex], isBusy, isNotType, targetTrackIndex >= tracks.length , targetTrackIndex)
 
       //check if drop on a empty place again and if the place is on a track but is busy or is not the clip's type 
 
@@ -2217,11 +2280,11 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
       if(type == 'video')
       {
          try {
-            const audioName = await invoke('extract_audio', { 
+            await invoke('extract_audio', { 
               projectPath: currentProjectPath, 
               fileName: filename 
             });
-            console.log("Áudio extraído com sucesso:", audioName);
+            
           } catch (e) {
             console.error("Falha na extração automática:", e);
           }
@@ -2410,7 +2473,6 @@ const openProject = async (path: string) => {
  const handleMassSplitAndSelect = (direction: 'left' | 'right') => {
     const playheadTime = Math.floor(playheadPos / pixelsPerSecond);
 
-    console.log('playhead time', playheadTime)
     
     saveHistory(clips, assets);
     
@@ -2598,7 +2660,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
     const isNotType = tracks.find( t => t.id === trackId)?.type !== knowTypeByAssetName(assetName,true)
 
 
-
+    
     if(!isBusy || !isNotType)
     {
        const newClip: Clip = {
@@ -2689,7 +2751,7 @@ const handleImportFile = async () => {
             projectPath: currentProjectPath, 
             fileName: fileName 
           });
-          console.log("Audio extracted", audioName);
+          //console.log("Audio extracted", audioName);
         } catch (e) {
           console.error("Falha na extração automática:", e);
         }
@@ -3065,7 +3127,7 @@ return (
               <div className="text-[10px] font-mono text-zinc-400 flex items-center gap-2 bg-black/40 px-3 py-1 rounded border border-zinc-800/50">
                 <Clock size={12} className="text-zinc-600" />
                 <span className="text-white font-bold tracking-widest min-w-[80px]">
-                  {formatTime(playheadPos / pixelsPerSecond)}
+                  {formatTime(currentTimeRef.current)}
                 </span>
               </div>
 
@@ -3132,9 +3194,13 @@ return (
       onMouseDown={(e) => {
         const rect = e.currentTarget.getBoundingClientRect();
         //const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
-        const newPos = e.clientX - rect.left  - (pixelsPerSecond/20); //calibration
+        const newPos = e.clientX   - rect.left  - (pixelsPerSecond/20); //calibration
         setPlayheadPos(newPos);
-        //playheadPosRef.current = newPos
+        currentTimeRef.current = playheadPos/pixelsPerSecond
+        seekTo(currentTimeRef.current);
+
+        
+        
       }}
 
     >
@@ -3153,7 +3219,7 @@ return (
     {/* PLAYHEAD - Now released inside the scroll container. */}
     <div ref={playheadRef}
       className="absolute top-0 bottom-0 w-[2px] bg-red-600 z-[100] pointer-events-none transition-transform duration-75 ease-out" 
-      style={{ left: playheadPos + asidetrackwidth + 15 }} // +8 por causa do padding p-2 do container
+      style={{ left: asidetrackwidth + 15 }} // +8 por causa do padding p-2 do container
 
     >
         {/* Needle head (Triangle or Circle) */}
