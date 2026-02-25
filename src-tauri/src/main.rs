@@ -520,35 +520,60 @@ async fn get_waveform_data(path: String, samples: usize) -> Result<Vec<f32>, Str
 }
 
 fn main() {
-    thread::spawn(|| {
-        let server = Server::http("127.0.0.1:1234").unwrap();
-        for request in server.incoming_requests() {
-            let url: &str = request.url();
+    thread::spawn(move || {
+    let server = Server::http("127.0.0.1:1234").unwrap();
+    for request in server.incoming_requests() {
+        let url = request.url().trim_start_matches('/');
+        let decoded_path = percent_encoding::percent_decode_str(url).decode_utf8_lossy().into_owned();
+        let path = Path::new(&decoded_path);
 
-            let decoded_path = if url.len() > 1 {
-                percent_encoding::percent_decode(url[1..].as_bytes())
-                    .decode_utf8_lossy()
-                    .to_string()
+        if path.exists() && path.is_file() {
+            let mut file = File::open(&path).unwrap();
+            let metadata = file.metadata().unwrap();
+            let file_size = metadata.len();
+
+            // Lógica de Range Header
+            let range_header = request.headers().iter()
+                .find(|h| h.field.as_str().to_ascii_lowercase() == "range")
+                .map(|h| h.value.as_str());
+
+            let mut response = if let Some(range) = range_header {
+                // Parse range: "bytes=start-end"
+                let range = range.replace("bytes=", "");
+                let parts: Vec<&str> = range.split('-').collect();
+                let start = parts[0].parse::<u64>().unwrap_or(0);
+                let end = if parts.len() > 1 && !parts[1].is_empty() {
+                    parts[1].parse::<u64>().unwrap_or(file_size - 1)
+                } else {
+                    file_size - 1
+                };
+
+                let length = end - start + 1;
+                file.seek(SeekFrom::Start(start)).unwrap();
+                let mut buffer = vec![0; length as usize];
+                file.read_exact(&mut buffer).unwrap();
+
+                let mut res = Response::from_data(buffer).with_status_code(206);
+                res.add_header(Header::from_bytes(&b"Content-Range"[..], 
+                    format!("bytes {}-{}/{}", start, end, file_size).as_bytes()).unwrap());
+                res
             } else {
-                String::new()
+                let mut buffer = Vec::new();
+                file.read_to_end(&mut buffer).unwrap();
+                Response::from_data(buffer).with_status_code(200)
             };
 
-            if let Ok(file) = File::open(&decoded_path) {
-                // 1. Create a response based on the file stream
-                let mut response = Response::from_file(file);
+            // Headers Obrigatórios
+            response.add_header(Header::from_bytes(&b"Content-Type"[..], &b"audio/mpeg"[..]).unwrap());
+            response.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin\""[..], &b"*"[..]).unwrap());
+            response.add_header(Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap());
 
-                // 2. Add headers individually (mutating the response variable)
-                response.add_header(Header::from_bytes(&b"Content-Type"[..], &b"video/mp4"[..]).unwrap());
-                response.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
-                response.add_header(Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap());
-
-                // 3. Send the response
-                let _ = request.respond(response);
-            } else {
-                let _ = request.respond(Response::from_string("Not Found").with_status_code(404));
-            }
+            let _ = request.respond(response);
+        } else {
+            let _ = request.respond(Response::from_string("Not Found").with_status_code(404));
         }
-    });
+    }
+});
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

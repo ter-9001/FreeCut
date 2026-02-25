@@ -331,7 +331,7 @@ const audioPlayersRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
 //Render all audios of the current time
 
-
+/*
 const renderAudio = () => {
 
   //if don't have audios or is paused stop the current players
@@ -377,8 +377,9 @@ const renderAudio = () => {
 
 
     //console.log('audio path', path)
+// Dentro do seu topAudios.forEach...
 
-    
+
 
     if (!player) {
       console.log('player created')
@@ -416,10 +417,46 @@ const renderAudio = () => {
 
 
 }
+*/
 
 
+useEffect(() => {
+  if (!topAudios || topAudios.length === 0 || !isPlaying) {
+    audioPlayersRef.current.forEach(p => p.pause());
+    return;
+  }
 
+  topAudios.forEach(clip => {
+    let player = audioPlayersRef.current.get(clip.id);
+    
+    //images are filter in UpdateAudio so all videos are really videos no metter how knowTypeByAssetName is use
+    const audio = `${clip.name.split('.').slice(0, -1).join('.')}.mp3`
+    const path =  knowTypeByAssetName(clip.name) === 'video' ? `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/extracted_audios/${audio}`)}` :
+    `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${clip.name}`)}`
 
+    if (!player) {
+      player = new Audio(path);
+      audioPlayersRef.current.set(clip.id, player);
+    }
+
+    const targetTime = (currentTimeRef.current - clip.start) + (clip.beginmoment || 0);
+
+    const syncAndPlay = () => {
+      if (targetTime >= 0 && targetTime < player!.duration) {
+        player!.currentTime = targetTime;
+      }
+      if (isPlaying) player!.play().catch(() => {});
+    };
+
+    //If the file header has already been loaded, skip to the correct time; otherwise, wait for the metadata.
+    if (player.readyState >= 1) { 
+      syncAndPlay();
+    } else {
+      
+      player.addEventListener('loadedmetadata', syncAndPlay, { once: true });
+    }
+  });
+}, [topAudios, isPlaying]);
 
 
 
@@ -495,12 +532,6 @@ useEffect(() => {
 
 
 
-useEffect(() => {
-
-    console.log('render audio up')
-    renderAudio()
-
-}, [isPlaying, topAudios])
 
 
 
