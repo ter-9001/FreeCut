@@ -389,24 +389,35 @@ const renderAudio = () => {
     // Time Synchronization
     const targetTime = (currentTime - clip.start) + (clip.beginmoment || 0);
     
+
+
+
+
     // It only synchronizes if the difference is greater than 100ms to avoid glitches.
-    if (Math.abs(player.currentTime - targetTime) > 0.3 ) {
+    if (Math.abs(player.currentTime - targetTime) > 0.15 ) {
       player.currentTime = targetTime;
       
     }
 
     // Controle de Play/Pause
     if (isPlaying && player.paused) {
+      player.load()
       player.play().catch(e => console.warn("Autoplay de áudio bloqueado:", e));
     } else if (!isPlaying && !player.paused) {
       player.pause();
     }
+
+    
       
   })
 
 
 
+
+
 }
+
+
 
 
 
@@ -1537,6 +1548,17 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
       playheadRef.current.style.transform = `translateX(${nextPos}px)`;
     }
 
+
+    audioPlayersRef.current.forEach((player, id) => {
+    const clip = clips.find(c => c.id === id);
+    if (clip) {
+      const clipTargetTime = (newTime - clip.start) + (clip.beginmoment || 0);
+      // Só faz o seek se o tempo for válido para este clipe
+      if (clipTargetTime >= 0 && clipTargetTime < (player.duration || Infinity)) {
+        player.currentTime = clipTargetTime;
+      }
+      }
+    });
     // 4. If playback is paused, force a frame draw on the Canvas
     if (!isPlaying) {
       drawFrame(newTime);
