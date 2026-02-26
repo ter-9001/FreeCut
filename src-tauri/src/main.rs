@@ -37,6 +37,19 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 
 
+use std::process::Child;
+use std::sync::Mutex;
+use tauri::State;
+
+use tauri::AppHandle;
+use tauri_plugin_shell::process::CommandChild;
+
+
+
+//  Updated state to hold the Tauri Sidecar CommandChild
+pub struct ExportState(pub Mutex<Option<CommandChild>>);
+
+
 #[derive(serde::Serialize)]
 struct Project {
     name: String,
@@ -51,19 +64,187 @@ pub struct VideoMetadata {
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+//  Struct to represent the Timeline Clips from Frontend
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Clip {
     pub id: String,
     pub name: String,
     pub path: String,
-    pub start: f64,    // Position on timeline (seconds)
-    pub duration: f64, // Length of the cut (seconds)
-    pub beginmoment: f64, // Start point inside the original file (seconds)
-    pub trackId: i32,
+    pub start: f64,
+    pub duration: f64,
+    pub beginmoment: f64,
+    pub trackId: String,
     #[serde(rename = "type")]
-    pub clip_type: String, // video, audio, or image
+    pub clip_type: String,
 }
 
+#[tauri::command]
+async fn export_video(
+    app_handle: AppHandle,
+    state: State<'_, ExportState>,
+    export_path: String,
+    clips: Vec<Clip>,
+) -> Result<(), String> {
+    // Set total duration max => start+ duration
+    let total_duration = clips.iter()
+        .map(|c| c.start + c.duration)
+        .fold(0.0f64, |a, b| a.max(b));
+
+    // filter string
+    let filter_complex = build_rendering_filter(&clips, total_duration);
+
+    let mut args = Vec::new();
+    for clip in &clips {
+        let path_lower = clip.path.to_lowercase();
+        
+        if path_lower.ends_with(".png") || path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg") {
+            args.push("-loop".to_string());
+            args.push("1".to_string());
+            args.push("-t".to_string());
+            args.push((total_duration + 1.0).to_string());
+        }
+        
+        args.push("-i".to_string());
+        args.push(clip.path.clone());
+    }
+
+    args.extend([
+        "-loglevel".to_string(), "error".to_string(),
+        "-filter_complex".to_string(), filter_complex,
+        "-map".to_string(), "[outv]".to_string(),
+        "-map".to_string(), "[outa]".to_string(),
+        "-c:v".to_string(), "libx264".to_string(),
+        "-preset".to_string(), "ultrafast".to_string(),
+        "-c:a".to_string(), "aac".to_string(),
+        "-b:a".to_string(), "192k".to_string(),
+        "-pix_fmt".to_string(), "yuv420p".to_string(),
+        "-t".to_string(), total_duration.to_string(), 
+        "-y".to_string(), export_path,
+    ]);
+
+    // Debug para o console
+    //println!("--- Comando FFmpeg Executado ---");
+    //println!("ffmpeg {}", args.join(" "));
+
+    // 5. Executar o Sidecar do Tauri
+    let (mut rx, child) = app_handle
+        .shell()
+        .sidecar("ffmpeg")
+        .map_err(|e| format!("FFmpeg sidecar não encontrado: {}", e))?
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("Falha ao iniciar FFmpeg: {}", e))?;
+
+    {
+        let mut lock = state.0.lock().unwrap();
+        *lock = Some(child);
+    }
+
+    while let Some(event) = rx.recv().await {
+        match event {
+            tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
+                let mut lock = state.0.lock().unwrap();
+                *lock = None;
+
+                if payload.code == Some(0) {
+                    return Ok(());
+                } else {
+                    return Err(format!("FFmpeg falhou com código: {:?}", payload.code));
+                }
+            }
+            _ => {} 
+        }
+    }
+
+    Err("O processo de exportação terminou inesperadamente".into())
+}
+
+fn build_rendering_filter(clips: &[Clip], total_duration: f64) -> String {
+    let mut filters = Vec::new();
+    let mut video_outputs = Vec::new();
+    let mut audio_outputs = Vec::new();
+
+    // center video in 1920x1080 
+    let centering_filter = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
+
+    for (i, clip) in clips.iter().enumerate() {
+        let path_lower = clip.path.to_lowercase();
+        let is_image = path_lower.ends_with(".png") || path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg");
+        let has_video = is_image || path_lower.ends_with(".mp4") || path_lower.ends_with(".mkv") || path_lower.ends_with(".mov") || path_lower.ends_with(".avi");
+        
+        // --- Process video/image ---
+        if has_video {
+            if is_image {
+                // Images use setpoints to position themselves at time 'start'.
+                filters.push(format!(
+                    "[{}:v]{},setpts=PTS-STARTPTS+{}/TB[v{}]",
+                    i, centering_filter, clip.start, i
+                ));
+            } else {
+                // Videos use trim (internal cut) and setpoints (positioning on the timeline).
+                filters.push(format!(
+                    "[{}:v]trim=start={}:duration={},{},setpts=PTS-STARTPTS+{}/TB[v{}]",
+                    i, clip.beginmoment, clip.duration, centering_filter, clip.start, i
+                ));
+            }
+            video_outputs.push((i, clip.start, clip.duration));
+        }
+
+        // --- Audio Processing ---
+        // If it's not an image, we try to extract and align the audio.
+        if !is_image {
+            let delay_ms = (clip.start * 1000.0) as i64;
+            // Atrim cuts the original audio, delay pushes it to the correct time on the timeline.
+            filters.push(format!(
+                "[{}:a]atrim=start={}:duration={},adelay={}|{}[a{}]",
+                i, clip.beginmoment, clip.duration, delay_ms, delay_ms, i
+            ));
+            audio_outputs.push(format!("[a{}]", i));
+        }
+    }
+
+    // --- Final Video Layer ---
+    // Creates a black background with the exact duration of the project
+    filters.push(format!("color=s=1920x1080:c=black:r=30:d={}[bg]", total_duration));
+    
+    let mut current_v_layer = "bg".to_string();
+    for (idx, (input_idx, start, duration)) in video_outputs.iter().enumerate() {
+        let next_v_layer = if idx == video_outputs.len() - 1 { "outv_pre".to_string() } else { format!("l{}", idx) };
+        filters.push(format!(
+            "[{}] [v{}] overlay=enable='between(t,{},{})' [ {} ]",
+            current_v_layer, input_idx, start, start + duration, next_v_layer
+        ));
+        current_v_layer = next_v_layer;
+    }
+    filters.push(format!("[{}]format=yuv420p[outv]", current_v_layer));
+
+    // --- Final Audio Layer ---
+    if audio_outputs.is_empty() {
+        filters.push(format!("anullsrc=r=44100:cl=stereo:d={}[outa]", total_duration));
+    } else {
+        let n = audio_outputs.len();
+        filters.push(format!(
+            "{}amix=inputs={}:duration=longest[outa]",
+            audio_outputs.join(""),
+            n
+        ));
+    }
+
+    filters.join(";")
+}
+
+
+
+
+#[tauri::command]
+async fn cancel_export(state: State<'_, ExportState>) -> Result<(), String> {
+    let mut lock = state.0.lock().unwrap();
+    if let Some(child) = lock.take() {
+        //  Kill the Tauri Sidecar process
+        child.kill().map_err(|e| format!("Failed to kill process: {}", e))?;
+    }
+    Ok(())
+}
 
 #[tauri::command]
 async fn generate_thumbnail(
@@ -113,6 +294,8 @@ async fn generate_thumbnail(
     }
 }
 
+
+
 fn build_complex_filter(clips: &[Clip]) -> String {
     let mut filters = Vec::new();
     let mut inputs = Vec::new();
@@ -136,56 +319,44 @@ fn build_complex_filter(clips: &[Clip]) -> String {
     filters.join(";")
 }
 
-#[tauri::command]
-async fn export_video(
-    app_handle: tauri::AppHandle,
-    project_path: String,
-    export_path: String,
-    clips: Vec<Clip> 
-) -> Result<(), String> {
-    // Resolve the FFmpeg path using the Manager trait
-    let ffmpeg_resource = app_handle.path().resource_dir()
-        .map_err(|e| e.to_string())?
-        .join("bin/ffmpeg");
 
-    let filter_string = build_complex_filter(&clips);
 
-    // Prepare the command arguments
-    let mut args = Vec::new();
-    
-    // Add all input files
-    for clip in &clips {
-        args.push("-i".to_string());
-        args.push(clip.path.clone());
-    }
+//  Build the FFmpeg filter graph based on track priority
 
-    args.extend([
-        "-filter_complex".to_string(),
-        filter_string,
-        "-map".to_string(),
-        "[outv]".to_string(),
-        "-c:v".to_string(),
-        "libx264".to_string(),
-        "-preset".to_string(),
-        "ultrafast".to_string(), //  High speed for testing
-        "-y".to_string(),
-        export_path
-    ]);
 
-    //  Execute and monitor process
-    let output = std::process::Command::new(ffmpeg_resource)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
 
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+
+// Helper function to wait for the process stored in State
+/*
+
+async fn wait_for_process(state: State<'_, ExportState>) -> Result<(), String> {
+    loop {
+        {
+            let mut lock = state.0.lock().unwrap();
+            if let Some(mut child) = lock.take() {
+                // Check if it finished
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        if status.success() { return Ok(()); }
+                        else { return Err("FFmpeg failed".into()); }
+                    }
+                    Ok(None) => {
+                        // Still running, put it back so cancel_export can kill it
+                        *lock = Some(child);
+                    }
+                    Err(e) => return Err(e.to_string()),
+                }
+            } else {
+                // If None, it means cancel_export was called and took the child
+                return Err("Export cancelled".into());
+            }
+        }
+        // Wait a bit before checking again to save CPU
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }
 
-
+*/
 
 #[tauri::command]
 fn list_project_files(project_path: String) -> Result<Vec<String>, String> {
@@ -519,6 +690,9 @@ async fn get_waveform_data(path: String, samples: usize) -> Result<Vec<f32>, Str
     Ok(peaks)
 }
 
+
+
+
 fn main() {
     thread::spawn(move || {
     let server = Server::http("127.0.0.1:1234").unwrap();
@@ -580,6 +754,7 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init()) // Dialog plugin for system file pickers
         // Custom protocol for serving local video files with range-request support
+        .manage(ExportState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             create_project_folder, 
             list_projects, 
@@ -598,7 +773,10 @@ fn main() {
             delete_file, 
             get_video_frame, 
             extract_audio, 
-            get_waveform_data
+            get_waveform_data,
+            export_video,
+            cancel_export
+           
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

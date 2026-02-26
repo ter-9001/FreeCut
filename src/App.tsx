@@ -48,7 +48,7 @@ import {
 
 import Waveform from "@/components/Waveform";
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { aside, track } from 'framer-motion/client';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -226,6 +226,71 @@ const lastTimeRef = useRef<number | null>(null);
 
 const [topClip, setTopClip] = useState<Clip | null>(null);
 const [topAudios, setTopAudios] = useState<Clip [] | null>(null);
+
+
+//State management for rendering feedback
+const [renderStatus, setRenderStatus] = useState<'idle' | 'rendering' | 'success'>('idle');
+const [renderPercent, setRenderPercent] = useState(0);
+
+const handleCancelExport = async () => {
+  try {
+    // [English Comment] Signal Rust to kill the FFmpeg task
+    await invoke('cancel_export');
+    setRenderStatus('idle');
+    setRenderPercent(0);
+    console.log("Export cancelled by user");
+  } catch (err) {
+    console.error("Failed to cancel export:", err);
+  }
+};
+
+const startExport = async () => {
+  // 1. Trigger the export command
+  if(clips.length == 0 || !clips )
+  {
+    
+    showNotify('There is no clips','error')
+    return
+  } 
+
+ if(!currentProjectPath)
+     return
+
+  const safeName = currentProjectPath.replace(/[^a-z0-0]/gi, '_').toLowerCase();
+
+  const targetPath = await save({
+    title: 'Export Final Video',
+    filters: [{
+      name: 'Video',
+      extensions: ['mp4']
+    }],
+    defaultPath: `${safeName}.mp4`
+  });
+
+  // [English Comment] If the user cancels the dialog, targetPath will be null
+  if (!targetPath) return;
+
+
+  setRenderStatus('rendering');
+
+  const clips_format = clips.map( c => { return {...c,path: `${currentProjectPath}/videos/${c.name}` ,trackId: c.trackId.toString(), type: knowTypeByAssetName(c.name)} })
+  
+  console.log( clips_format.map(c => c.path) )
+
+  try {
+    // Call the backend pipeline
+    await invoke('export_video', {
+      projectPath: currentProjectPath,
+      exportPath: targetPath, // Selected via dialog.save()
+      clips: clips_format
+    });
+    
+    setRenderStatus('success');
+  } catch (err) {
+    console.error("Export Error:", err);
+    setRenderStatus('idle');
+  }
+};
 
 
 //code to video preview
@@ -2934,9 +2999,9 @@ return (
             >
               <Youtube size={14} /> Download
             </button>
-            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Share2 size={16}/></button>
-            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Settings size={16}/></button>
-            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400"><Import size={16}/></button>
+            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400" title='Post in social media'><Share2 size={16}/></button>
+            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400" title='Settings'><Settings size={16}/></button>
+            <button className="p-2 hover:bg-zinc-800 rounded-full text-zinc-400" title='Export video' onClick={()=> { startExport();}}><Import size={16}/></button>
           </div>
         </header>
 
@@ -3503,6 +3568,43 @@ return (
         </div>
       )}
     </AnimatePresence>
+
+    <AnimatePresence>
+  {renderStatus === 'rendering' && (
+    <motion.div className="fixed inset-0 z-[600] bg-[#050505]/95 backdrop-blur-2xl flex flex-col items-center justify-center">
+      <div className="w-80 space-y-8 text-center">
+        
+        {/* Progress UI */}
+        <div className="space-y-2">
+           <div className="relative h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+              <motion.div 
+                className="h-full bg-red-600 shadow-[0_0_20px_rgba(220,38,38,0.8)]"
+                initial={{ width: "0%" }}
+                animate={{ width: `${renderPercent}%` }}
+              />
+            </div>
+            <p className="text-zinc-500 text-[9px] font-mono tracking-widest uppercase">
+              Rendering Master: {renderPercent}%
+            </p>
+        </div>
+
+        {/* [English Comment] Cancel Button Implementation */}
+        <button
+          onClick={handleCancelExport}
+          className="group relative px-6 py-2 overflow-hidden rounded-full border border-white/10 hover:border-red-500/50 transition-all"
+        >
+          <div className="relative z-10 flex items-center gap-2 text-zinc-400 group-hover:text-white transition-colors">
+            <X size={14} />
+            <span className="text-[10px] font-black uppercase tracking-widest">Abort Mission</span>
+          </div>
+          {/* Subtle hover background effect */}
+          <div className="absolute inset-0 bg-red-600/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+        </button>
+
+      </div>
+    </motion.div>
+  )}
+</AnimatePresence>
   </div>
 );
 }
