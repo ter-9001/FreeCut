@@ -52,6 +52,8 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { aside, track } from 'framer-motion/client';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+
 
 
 
@@ -232,6 +234,19 @@ const [topAudios, setTopAudios] = useState<Clip [] | null>(null);
 const [renderStatus, setRenderStatus] = useState<'idle' | 'rendering' | 'success'>('idle');
 const [renderPercent, setRenderPercent] = useState(0);
 
+// Dentro do seu componente App
+useEffect(() => {
+  const unlisten = listen<number>('export-progress', (event) => {
+    // Update the state you're using in the progress bar
+    setRenderPercent(event.payload);
+  });
+
+  return () => {
+    unlisten.then(f => f());
+  };
+}, []);
+
+
 const handleCancelExport = async () => {
   try {
     // [English Comment] Signal Rust to kill the FFmpeg task
@@ -246,6 +261,8 @@ const handleCancelExport = async () => {
 
 const startExport = async () => {
   // 1. Trigger the export command
+
+  setRenderPercent(0)
   if(clips.length == 0 || !clips )
   {
     
@@ -269,7 +286,6 @@ const startExport = async () => {
 
   // [English Comment] If the user cancels the dialog, targetPath will be null
   if (!targetPath) return;
-
 
   setRenderStatus('rendering');
 
@@ -3245,7 +3261,7 @@ return (
               <div className="text-[10px] font-mono text-zinc-400 flex items-center gap-2 bg-black/40 px-3 py-1 rounded border border-zinc-800/50">
                 <Clock size={12} className="text-zinc-600" />
                 <span className="text-white font-bold tracking-widest min-w-[80px]">
-                  {formatTime(currentTimeRef.current)}
+                  {formatTime(playheadPos/pixelsPerSecond)}
                 </span>
               </div>
 
@@ -3313,9 +3329,10 @@ return (
         const rect = e.currentTarget.getBoundingClientRect();
         //const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
         const newPos = e.clientX   - rect.left  - (pixelsPerSecond/20); //calibration
-        setPlayheadPos(newPos);
         currentTimeRef.current = playheadPos/pixelsPerSecond
         seekTo(currentTimeRef.current);
+        setPlayheadPos(newPos);
+        
 
         
         
@@ -3588,7 +3605,7 @@ return (
             </p>
         </div>
 
-        {/* [English Comment] Cancel Button Implementation */}
+        {/* Cancel Button Implementation */}
         <button
           onClick={handleCancelExport}
           className="group relative px-6 py-2 overflow-hidden rounded-full border border-white/10 hover:border-red-500/50 transition-all"

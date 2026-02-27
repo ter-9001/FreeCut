@@ -78,8 +78,9 @@ pub struct Clip {
     pub clip_type: String,
 }
 
+
 #[tauri::command]
-async fn export_video(
+async fn export_video_old(
     app_handle: AppHandle,
     state: State<'_, ExportState>,
     export_path: String,
@@ -119,7 +120,7 @@ async fn export_video(
         "-b:a".to_string(), "192k".to_string(),
         "-pix_fmt".to_string(), "yuv420p".to_string(),
         "-t".to_string(), total_duration.to_string(), 
-        "-y".to_string(), export_path,
+        "-y".to_string(), export_path
     ]);
 
     // Debug para o console
@@ -157,6 +158,187 @@ async fn export_video(
     }
 
     Err("O processo de exportação terminou inesperadamente".into())
+}
+
+
+
+#[tauri::command]
+async fn export_video(
+    app_handle: AppHandle,
+    state: State<'_, ExportState>,
+    export_path: String,
+    clips: Vec<Clip>,
+) -> Result<(), String> {
+    // Set total duration max => start+ duration
+    let total_duration = clips.iter()
+        .map(|c| c.start + c.duration)
+        .fold(0.0f64, |a, b| a.max(b));
+
+    // filter string
+    let filter_complex = build_rendering_filter(&clips, total_duration);
+
+    let mut args = Vec::new();
+    for clip in &clips {
+        let path_lower = clip.path.to_lowercase();
+        
+        if path_lower.ends_with(".png") || path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg") {
+            args.push("-loop".to_string());
+            args.push("1".to_string());
+            args.push("-t".to_string());
+            args.push((total_duration + 1.0).to_string());
+        }
+        
+        args.push("-i".to_string());
+        args.push(clip.path.clone());
+    }
+
+    args.extend([
+        "-filter_complex".to_string(), filter_complex,
+        "-map".to_string(), "[outv]".to_string(),
+        "-map".to_string(), "[outa]".to_string(),
+        "-c:v".to_string(), "libx264".to_string(),
+        "-preset".to_string(), "ultrafast".to_string(),
+        "-c:a".to_string(), "aac".to_string(),
+        "-b:a".to_string(), "192k".to_string(),
+        "-pix_fmt".to_string(), "yuv420p".to_string(),
+        "-t".to_string(), total_duration.to_string(), 
+        "-y".to_string(), export_path
+    ]);
+
+    // Debug para o console
+    //println!("--- Comando FFmpeg Executado ---");
+    //println!("ffmpeg {}", args.join(" "));
+
+    // 5. Executar o Sidecar do Tauri
+    let (mut rx, child) = app_handle
+        .shell()
+        .sidecar("ffmpeg")
+        .map_err(|e| format!("FFmpeg sidecar não encontrado: {}", e))?
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("Falha ao iniciar FFmpeg: {}", e))?;
+
+    {
+        let mut lock = state.0.lock().unwrap();
+        *lock = Some(child);
+    }
+
+    
+    while let Some(event) = rx.recv().await {
+        match event {
+            tauri_plugin_shell::process::CommandEvent::Stderr(line_bytes) => {
+                let line = String::from_utf8_lossy(&line_bytes);
+                // [English Comment] FFmpeg output: "time=00:00:10.50"
+                if line.contains("time=") {
+                    if let Some(time_part) = line.split("time=").last().and_then(|s| s.split_whitespace().next()) {
+                        let hms: Vec<&str> = time_part.split(':').collect();
+                        if hms.len() == 3 {
+                            let hours: f64 = hms[0].parse().unwrap_or(0.0);
+                            let mins: f64 = hms[1].parse().unwrap_or(0.0);
+                            let secs: f64 = hms[2].parse().unwrap_or(0.0);
+                            let current_seconds = hours * 3600.0 + mins * 60.0 + secs;
+                            
+                            let percentage = ((current_seconds / total_duration) * 100.0).min(100.0) as u32;
+                            // [English Comment] Emit progress to Frontend
+                            let _ = app_handle.emit("export-progress", percentage);
+                        }
+                    }
+                }
+            }
+            tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
+                let mut lock = state.0.lock().unwrap();
+                *lock = None;
+                if payload.code == Some(0) { 
+                    let _ = app_handle.emit("export-progress", 100);
+                    return Ok(()); 
+                }
+                else { return Err(format!("FFmpeg error: {:?}", payload.code)); }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+
+    //Err("O processo de exportação terminou inesperadamente".into())
+}
+
+
+use tauri::Emitter; // Adicione este import no topo
+
+#[tauri::command]
+async fn export_video_ai(
+    app_handle: AppHandle,
+    state: State<'_, ExportState>,
+    export_path: String,
+    clips: Vec<Clip>,
+) -> Result<(), String> {
+    // [English Comment] Calculate total duration for progress percentage
+    let total_duration = clips.iter()
+        .map(|c| c.start + c.duration)
+        .fold(0.0, f64::max);
+
+    let filter_complex = build_rendering_filter(&clips, total_duration);
+    let mut args = Vec::new();
+    for clip in &clips {
+        args.push("-i".to_string());
+        args.push(clip.path.clone());
+    }
+
+    // [English Comment] Add '-progress pipe:2' to get machine-readable progress in stderr
+    args.extend([
+        "-filter_complex".to_string(), filter_complex,
+        "-map".to_string(), "[outv]".to_string(),
+        "-c:v".to_string(), "libx264".to_string(),
+        "-preset".to_string(), "ultrafast".to_string(),
+        "-pix_fmt".to_string(), "yuv420p".to_string(),
+        "-y".to_string(), export_path,
+    ]);
+
+    let (mut rx, child) = app_handle.shell().sidecar("ffmpeg")
+        .map_err(|e| e.to_string())?
+        .args(args)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    {
+        let mut lock = state.0.lock().unwrap();
+        *lock = Some(child);
+    }
+
+    while let Some(event) = rx.recv().await {
+        match event {
+            tauri_plugin_shell::process::CommandEvent::Stderr(line_bytes) => {
+                let line = String::from_utf8_lossy(&line_bytes);
+                // [English Comment] FFmpeg output: "time=00:00:10.50"
+                if line.contains("time=") {
+                    if let Some(time_part) = line.split("time=").last().and_then(|s| s.split_whitespace().next()) {
+                        let hms: Vec<&str> = time_part.split(':').collect();
+                        if hms.len() == 3 {
+                            let hours: f64 = hms[0].parse().unwrap_or(0.0);
+                            let mins: f64 = hms[1].parse().unwrap_or(0.0);
+                            let secs: f64 = hms[2].parse().unwrap_or(0.0);
+                            let current_seconds = hours * 3600.0 + mins * 60.0 + secs;
+                            
+                            let percentage = ((current_seconds / total_duration) * 100.0).min(100.0) as u32;
+                            // [English Comment] Emit progress to Frontend
+                            let _ = app_handle.emit("export-progress", percentage);
+                        }
+                    }
+                }
+            }
+            tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
+                let mut lock = state.0.lock().unwrap();
+                *lock = None;
+                if payload.code == Some(0) { 
+                    let _ = app_handle.emit("export-progress", 100);
+                    return Ok(()); 
+                }
+                else { return Err(format!("FFmpeg error: {:?}", payload.code)); }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn build_rendering_filter(clips: &[Clip], total_duration: f64) -> String {
