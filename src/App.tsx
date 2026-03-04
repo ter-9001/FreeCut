@@ -52,7 +52,9 @@ import {
   Rotate3d, 
   Key, 
   Wind,
-  Diamond
+  Diamond,
+  MicOffIcon,
+  LockIcon
   
 } from 'lucide-react';
 
@@ -104,7 +106,10 @@ interface Asset {
 interface Tracks
 {
   id: number;
-  type:  'audio' | 'video' | 'effects'
+  type:  'audio' | 'video' | 'effects';
+  lock?: boolean;
+  mute?: boolean;
+
 }
 
 const PIXELS_PER_SECOND = 5;
@@ -453,7 +458,8 @@ const updateAudio = () => {
   const currentClips = clips.filter(clip => 
     currentTime >= clip.start  && 
     currentTime <= (clip.start  + clip.duration) && 
-    knowTypeByAssetName(clip.name) !== 'image'
+    knowTypeByAssetName(clip.name) !== 'image' &&
+    tracks.find(t => t.id === clip.trackId)?.mute === false
   );
 
   if (currentClips.length == 0)
@@ -473,6 +479,7 @@ const updateAudio = () => {
 
   if (idsAtuais !== idsNovos) {
     setTopAudios(winner);
+    console.log('winner is ', winner)
   }
 
 
@@ -488,100 +495,23 @@ const audioPlayersRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
 //Render all audios of the current time
 
-/*
-const renderAudio = () => {
-
-  //if don't have audios or is paused stop the current players
-
-  ///console.log('use efect audio')
-
-  if (!topAudios || topAudios.length === 0 || !isPlaying) {
-    audioPlayersRef.current.forEach(player => player.pause());
-    return;
-  }
-
-  //play control for current players
-  if(isPlaying)
-    audioPlayersRef.current.forEach(player => player.play());
-
-
-
-
-
-
-  const activeIds = new Set(topAudios.map(clip => clip.id));
-  
-
-  // 1. Remove audio files that are no longer on the needle.
-  audioPlayersRef.current.forEach((player, id) => {
-    if (!activeIds.has(id)) {
-      player.pause();
-      player.src = "";
-      audioPlayersRef.current.delete(id);
-    }
-  });
-
-  // 2. Add or update audio files that should be playing.
-  topAudios.forEach(clip => {
-
-    let player = audioPlayersRef.current.get(clip.id);
-
-
-    //images are filter in UpdateAudio so all videos are really videos no metter how knowTypeByAssetName is use
-    const audio = `${clip.name.split('.').slice(0, -1).join('.')}.mp3`
-    const path =  knowTypeByAssetName(clip.name) === 'video' ? `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/extracted_audios/${audio}`)}` :
-    `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${clip.name}`)}`
-
-
-    //console.log('audio path', path)
-// Dentro do seu topAudios.forEach...
-
-
-
-    if (!player) {
-      console.log('player created')
-      player = new Audio(path);
-      audioPlayersRef.current.set(clip.id, player);
-    }
-
-    // Time Synchronization
-    const targetTime = (currentTime - clip.start) + (clip.beginmoment || 0);
-    
-
-
-
-
-    // It only synchronizes if the difference is greater than 100ms to avoid glitches.
-    if (Math.abs(player.currentTime - targetTime) > 0.15 ) {
-      player.currentTime = targetTime;
-      
-    }
-
-    // Controle de Play/Pause
-    if (isPlaying && player.paused) {
-      player.load()
-      player.play().catch(e => console.warn("Autoplay de áudio bloqueado:", e));
-    } else if (!isPlaying && !player.paused) {
-      player.pause();
-    }
-
-    
-      
-  })
-
-
-
-
-
-}
-*/
-
-
 useEffect(() => {
   if (!topAudios || topAudios.length === 0 || !isPlaying) {
     audioPlayersRef.current.forEach(p => p.pause());
     return;
   }
+
+
+  const currentIds = new Set(topAudios?.map(clip => clip.id));
+
+  audioPlayersRef.current.forEach((player, id) => {
+    if (!currentIds.has(id)) {
+      player.pause();
+      player.src = ""; // Libera o recurso do navegador
+      player.load();
+      audioPlayersRef.current.delete(id);
+    }
+  });
 
   topAudios.forEach(clip => {
     let player = audioPlayersRef.current.get(clip.id);
@@ -613,6 +543,10 @@ useEffect(() => {
       player.addEventListener('loadedmetadata', syncAndPlay, { once: true });
     }
   });
+
+
+
+
 }, [topAudios, isPlaying]);
 
 
@@ -1916,7 +1850,19 @@ const handleSplit = () => {
 
 
 
+const lockmuteTrack = (option: number, track: Tracks) => {
+  const updatedTrack = { ...track };
 
+  if (option === 0) {
+    updatedTrack.lock = !updatedTrack.lock;
+  } else if (option === 1) {
+    updatedTrack.mute = !updatedTrack.mute;
+  }
+
+  setTracks(prevTracks => 
+    prevTracks.map(t => t.id === track.id ? updatedTrack : t)
+  );
+};
 
 
 
@@ -1959,6 +1905,8 @@ const handleSplit = () => {
       e.preventDefault();
       e.stopPropagation();
       e.dataTransfer.dropEffect = "copy";
+
+      
     };
 
 //Play and Pause of Player Source Auxiliar
@@ -2673,6 +2621,9 @@ const openProject = async (path: string) => {
   clipId: string | null
 ) => {
 
+  if(tracks.find(t => t.id === trackId)?.lock === true) return
+
+
   // If the dragged clip is not in the current selection, we select only that clip.
   if (clipId !== null && !selectedClipIds.includes(clipId)) {
     setSelectedClipIds([clipId]);
@@ -2800,8 +2751,16 @@ const isSpaceOccupied = (trackId: number, start: number, duration: number, exclu
 
  
 const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
-   e.preventDefault();
+  e.preventDefault();
   e.stopPropagation();
+
+
+
+  if(tracks.find(t => t.id === trackId)?.lock === true) return
+
+
+ 
+
   
   const previousTrackRaw = e.dataTransfer.getData("previousTrackId");
   const previousTrack = previousTrackRaw ? Number(previousTrackRaw) : null;
@@ -3068,7 +3027,7 @@ const PropertyRow = ({ label, children, keyframable = true, activeColor = "#4f46
           onMouseEnter={(e) => e.currentTarget.style.color = activeColor}
           onMouseLeave={(e) => e.currentTarget.style.color = `${activeColor}80`}
         >
-          <Key size={10} />
+          <Diamond size={10} />
         </button>
       )}
     </div>
@@ -3526,7 +3485,6 @@ return (
         
         <audio 
           ref={audioRef2}
-          src={`http://127.0.0.1:1234${sourceAsset.path}.mp3`}
           onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
           hidden
         />
@@ -3869,14 +3827,51 @@ return (
               ID: {track.id + 1}
             </span>
           </div>
+
+          <div className="flex flex-row min-w-0">
+
+            <LockIcon size={14}  onClick={() => lockmuteTrack(0, track)} 
+              className={`cursor-pointer transition-colors duration-200 ${
+                track.lock 
+                  ? 'text-violet-500 fill-violet-500/20' // Roxo moderno com um leve preenchimento (opcional)
+                  : 'text-gray-400 hover:text-gray-200'  // Cor neutra quando desligado
+              }`}/>
+
+            <MicOffIcon size={14} onClick={() => lockmuteTrack(1, track)} 
+              className={`cursor-pointer transition-colors duration-200 ${
+                track.mute 
+                  ? 'text-violet-500 fill-violet-500/20' // Roxo moderno com um leve preenchimento (opcional)
+                  : 'text-gray-400 hover:text-gray-200'  // Cor neutra quando desligado
+              }`}/>
+
+
+          </div>
+
+
         </div>
 
         {/* DROPS AREA: Where is the Clips stay */}
         <div 
           onDragOver={handleDragOver}
           onDrop={(e) => handleDropOnTimeline(e, track.id)}
-          className="relative flex-1 bg-zinc-900/10 border border-zinc-800/20 rounded-md hover:bg-zinc-900/20 transition-colors min-w-[10000px]"
+          className={`relative flex-1  border 
+          rounded-md  
+          transition-colors min-w-[10000px]
+          ${ track.lock &&
+            'text-slate-500 opacity-40 hover:opacity-60 transition-opacity'
+          }
+
+          ${track.mute 
+          ? 'bg-rose-950/30 border-rose-500/40' // Fundo vinho sutil e borda rosa
+          : 'bg-zinc-900/10 border-zinc-800/20 hover:bg-zinc-900/20'
+          }`
+        
+        
+          }
           style={{ height: '64px' }}
+
+          
+
         >
           {/* Clips filtrados por track.id */}
           {clips.filter(c => Number(c.trackId) === Number(track.id)).map((clip) => {
