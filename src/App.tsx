@@ -51,7 +51,8 @@ import {
   Maximize, 
   Rotate3d, 
   Key, 
-  Wind
+  Wind,
+  Diamond
   
 } from 'lucide-react';
 
@@ -197,6 +198,20 @@ export default function App() {
     'bg-cyan-600',    // Sky
     'bg-indigo-600'   // Galaxy
   ];
+
+  //conversor for clip colors for hexadecimal
+
+  const COLOR_MAP: Record<string, string> = {
+  'bg-blue-600': '#2563eb',    // Ocean
+  'bg-emerald-600': '#059669', // Forest
+  'bg-violet-600': '#7c3aed',  // Royal
+  'bg-amber-600': '#d97706',   // Gold
+  'bg-rose-600': '#e11d48',    // Wine
+  'bg-cyan-600': '#0891b2',    // Sky
+  'bg-indigo-600': '#4f46e5'   // Galaxy
+};
+
+  
 
   // Helper to get a random color
   const getRandomColor = () => CLIP_COLORS[Math.floor(Math.random() * CLIP_COLORS.length)];
@@ -3042,132 +3057,191 @@ const handleImportFile = async () => {
   //elements for aside of config clips
 
   // Subcomponent for inputs with Keyframe icon
-  const PropertyRow = ({ label, children, keyframable = true }: { label: string, children: React.ReactNode, keyframable?: boolean }) => (
-    <div className="flex flex-col gap-2 mb-4">
-      <div className="flex justify-between items-center">
-        <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-tighter">{label}</label>
-        {keyframable && (
-          <button className="text-zinc-600 hover:text-indigo-400 transition-colors">
-            <Key size={10} />
-          </button>
-        )}
-      </div>
-      {children}
+const PropertyRow = ({ label, children, keyframable = true, activeColor = "#4f46e5" }) => (
+  <div className="flex flex-col gap-2 mb-4">
+    <div className="flex justify-between items-center">
+      <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-tighter">{label}</label>
+      {keyframable && (
+        <button 
+          className="transition-colors"
+          style={{ color: `${activeColor}80` }} // 80 = 50% opacidade
+          onMouseEnter={(e) => e.currentTarget.style.color = activeColor}
+          onMouseLeave={(e) => e.currentTarget.style.color = `${activeColor}80`}
+        >
+          <Key size={10} />
+        </button>
+      )}
     </div>
-  );
+    {children}
+  </div>
+);
 
-  const PropertiesAside = ({ selectedClip }: { selectedClip: any }) => {
-    if (!selectedClip) return null;
 
-    const isVideo = selectedClip.clip_type === "video" || selectedClip.path.endsWith(".mp4");
-    const isAudio = selectedClip.clip_type === "audio" || selectedClip.path.endsWith(".mp3") || selectedClip.path.endsWith(".wav");
-    const isText = selectedClip.clip_type === "text";
+const PropertiesAside = () => {
+  // Search clip
+  if (!selectedClipIds || selectedClipIds.length !== 1) return null;
 
-    return (
-      <aside className="w-72 bg-[#090909] border-l border-white/5 flex flex-col h-full overflow-hidden animate-in slide-in-from-right duration-300">
-        {/* Header */}
-        <div className="p-4 border-b border-white/5 flex items-center gap-3">
-          <div className="p-2 bg-indigo-500/10 rounded-lg">
-            {isVideo && <Video size={16} className="text-indigo-400" />}
-            {isAudio && <Volume2 size={16} className="text-indigo-400" />}
-            {isText && <Type size={16} className="text-indigo-400" />}
-          </div>
-          <div>
-            <h2 className="text-[11px] font-black uppercase tracking-widest text-white">Inspector</h2>
-            <p className="text-[9px] text-zinc-500 truncate w-40">{selectedClip.name || "Selected Clip"}</p>
-          </div>
-        </div>
+  const foundClip = clips.find(c => c.id === selectedClipIds[0]);
+  if (!foundClip) return null;
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-6">
-          
-          {/* SECTION: BASIC */}
-          <section>
-            <div className="flex items-center gap-2 mb-4 text-indigo-400">
-              <Settings2 size={12} />
-              <span className="text-[10px] font-black uppercase tracking-widest">Basic</span>
-            </div>
+  const assetnow = assets.find(a => a.name === foundClip.name);
 
-            {(isVideo || isText) && (
-              <>
-                <div className="grid grid-cols-2 gap-2">
-                  <PropertyRow label="Position X"><input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
-                  <PropertyRow label="Position Y"><input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
-                </div>
-                <PropertyRow label="Zoom"><input type="range" className="w-full accent-indigo-500" /></PropertyRow>
-              </>
-            )}
-
-            {isText && (
-              <>
-                <PropertyRow label="Font" keyframable={false}>
-                  <select className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none">
-                    <option>Inter</option>
-                    <option>Roboto</option>
-                    <option>Monospace</option>
-                  </select>
-                </PropertyRow>
-                <PropertyRow label="Color"><input type="color" className="w-full h-8 bg-transparent border-none rounded cursor-pointer" /></PropertyRow>
-              </>
-            )}
-
-            {isAudio && (
-              <PropertyRow label="Volume"><input type="range" className="w-full accent-indigo-500" /></PropertyRow>
-            )}
-
-            <PropertyRow label="Opacity"><input type="range" className="w-full accent-indigo-500" /></PropertyRow>
-            <PropertyRow label="Speed"><input type="number" step="0.1" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white w-full" /></PropertyRow>
-
-            {(isVideo || isText) && (
-              <div className="grid grid-cols-2 gap-2 mt-2">
-                <PropertyRow label="Rotation"><input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
-                <PropertyRow label="3D Rot"><input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
-              </div>
-            )}
-          </section>
-
-          {/* SECTION: FADES */}
-          <section className="pt-4 border-t border-white/5">
-            <div className="flex items-center gap-2 mb-4 text-zinc-400">
-              <Wind size={12} />
-              <span className="text-[10px] font-black uppercase tracking-widest">Transitions</span>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <PropertyRow label="Fade In" keyframable={false}><input type="text" placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
-              <PropertyRow label="Fade Out" keyframable={false}><input type="text" placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white" /></PropertyRow>
-            </div>
-          </section>
-
-          {/* SECTION: BLEND & MASK (Videos and Text only) */}
-          {!isAudio && (
-            <section className="pt-4 border-t border-white/5">
-              <div className="flex items-center gap-2 mb-4 text-zinc-400">
-                <Layers size={12} />
-                <span className="text-[10px] font-black uppercase tracking-widest">Advanced</span>
-              </div>
-              <PropertyRow label="Blend Mode" keyframable={false}>
-                <select className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white w-full outline-none">
-                  <option>Normal</option>
-                  <option>Screen</option>
-                  <option>Multiply</option>
-                  <option>Overlay</option>
-                </select>
-              </PropertyRow>
-              <PropertyRow label="Mask" keyframable={false}>
-                <button className="w-full bg-white/5 border border-white/5 rounded py-2 text-[9px] font-bold hover:bg-white/10 transition-colors uppercase">Edit Mask</button>
-              </PropertyRow>
-            </section>
-          )}
-
-        </div>
-      </aside>
-    );
+  const selectedClip = {
+      ...foundClip, 
+      path: assetnow?.path, 
+      type: knowTypeByAssetName(foundClip.name)
   };
 
+  if(!selectedClip.path) return null;
 
+  // Definição da cor ativa
+  const activeHex = COLOR_MAP[selectedClip.color] || '#4f46e5';
 
+  const isVideo = selectedClip.type === "video" || selectedClip.path?.endsWith(".mp4");
+  const isAudio = selectedClip.type === "audio" || selectedClip.path?.endsWith(".mp3") || selectedClip.path?.endsWith(".wav");
+  const isText = selectedClip.type === "text";
 
+  return (
+    <aside className="w-72 bg-[#090909] border-l border-white/5 flex flex-col h-full overflow-hidden animate-in slide-in-from-right duration-300">
+      {/* Header */}
+      <div className="p-4 border-b border-white/5 flex items-center gap-3">
+        {/* Background do ícone com 15% de opacidade via Hex */}
+        <div 
+          className="p-2 rounded-lg" 
+          style={{ backgroundColor: `${activeHex}26` }}
+        >
+          {isVideo && <Video size={16} style={{ color: activeHex }} />}
+          {isAudio && <Volume2 size={16} style={{ color: activeHex }} />}
+          {isText && <Type size={16} style={{ color: activeHex }} />}
+        </div>
+        <div>
+          <h2 className="text-[11px] font-black uppercase tracking-widest text-white">Inspector</h2>
+          <p className="text-[9px] text-zinc-500 truncate w-40">{selectedClip.name || "Selected Clip"}</p>
+        </div>
+      </div>
 
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-6">
+        {/* SECTION: BASIC */}
+        <section>
+          <div className="flex items-center gap-2 mb-4" style={{ color: activeHex }}>
+            <Settings2 size={12} />
+            <span className="text-[10px] font-black uppercase tracking-widest">Basic</span>
+          </div>
+
+          {(isVideo || isText) && (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <PropertyRow label="Position X" activeColor={activeHex}>
+                  <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none focus:border-white/20" />
+                </PropertyRow>
+                <PropertyRow label="Position Y" activeColor={activeHex}>
+                  <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none focus:border-white/20" />
+                </PropertyRow>
+              </div>
+              <PropertyRow label="Zoom" activeColor={activeHex}>
+                <input 
+                  type="range" 
+                  className="w-full cursor-pointer" 
+                  style={{ accentColor: activeHex }} 
+                />
+              </PropertyRow>
+            </>
+          )}
+
+          {isText && (
+            <>
+              <PropertyRow label="Font" keyframable={false}>
+                <select className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none w-full">
+                  <option>Inter</option>
+                  <option>Roboto</option>
+                  <option>Monospace</option>
+                </select>
+              </PropertyRow>
+              <PropertyRow label="Color" activeColor={activeHex}>
+                <input type="color" className="w-full h-8 bg-transparent border-none rounded cursor-pointer" />
+              </PropertyRow>
+            </>
+          )}
+
+          {isAudio && (
+            <PropertyRow label="Volume" activeColor={activeHex}>
+              <input 
+                type="range" 
+                className="w-full cursor-pointer" 
+                style={{ accentColor: activeHex }} 
+              />
+            </PropertyRow>
+          )}
+
+          {(isVideo || isText) && (
+            <PropertyRow label="Opacity" activeColor={activeHex}>
+              <input 
+                type="range" 
+                className="w-full cursor-pointer" 
+                style={{ accentColor: activeHex }} 
+              />
+            </PropertyRow>
+          )}
+          
+          <PropertyRow label="Speed" activeColor={activeHex}>
+            <input type="number" step="0.1" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white w-full outline-none focus:border-white/20" />
+          </PropertyRow>
+
+          {(isVideo || isText) && (
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              <PropertyRow label="Rotation" activeColor={activeHex}>
+                <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
+              </PropertyRow>
+              <PropertyRow label="3D Rot" activeColor={activeHex}>
+                <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
+              </PropertyRow>
+            </div>
+          )}
+        </section>
+
+        {/* SECTION: FADES */}
+        <section className="pt-4 border-t border-white/5">
+          <div className="flex items-center gap-2 mb-4 text-zinc-400">
+            <Wind size={12} />
+            <span className="text-[10px] font-black uppercase tracking-widest">Transitions</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <PropertyRow label="Fade In" keyframable={false}>
+              <input type="text" placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
+            </PropertyRow>
+            <PropertyRow label="Fade Out" keyframable={false}>
+              <input type="text" placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
+            </PropertyRow>
+          </div>
+        </section>
+
+        {/* SECTION: BLEND & MASK */}
+        {!isAudio && (
+          <section className="pt-4 border-t border-white/5">
+            <div className="flex items-center gap-2 mb-4 text-zinc-400">
+              <Layers size={12} />
+              <span className="text-[10px] font-black uppercase tracking-widest">Advanced</span>
+            </div>
+            <PropertyRow label="Blend Mode" keyframable={false}>
+              <select className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white w-full outline-none">
+                <option>Normal</option>
+                <option>Screen</option>
+                <option>Multiply</option>
+                <option>Overlay</option>
+              </select>
+            </PropertyRow>
+            <PropertyRow label="Mask" keyframable={false}>
+              <button className="w-full bg-white/5 border border-white/5 rounded py-2 text-[9px] font-bold hover:bg-white/10 transition-all uppercase">
+                Edit Mask
+              </button>
+            </PropertyRow>
+          </section>
+        )}
+      </div>
+    </aside>
+  );
+};
 
 
   // --- RENDER ---
@@ -3599,7 +3673,7 @@ return (
 
 </div>
 
-
+      <PropertiesAside/>
 
 
 
