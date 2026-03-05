@@ -85,6 +85,7 @@ interface Clip {
   trackId: number;
   maxduration: number; // max size in the timeline at current position
   beginmoment: number; //begin of the clip in relation of all original clip (asset)
+  mute?: boolean
 }
 
 interface ProjectFileData {
@@ -311,6 +312,131 @@ useEffect(() => {
 }, []);
 
 
+//context menu of clips (right click mouse)
+
+const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: any, clip: Clip } | null>(null);
+
+const handleContextMenu = (e: React.MouseEvent, type: any, clip: Clip) => {
+  e.preventDefault(); // Impede o menu padrão do Windows/Browser
+  setContextMenu({ x: e.clientX, y: e.clientY, type: type, clip: clip });
+};
+
+// Fecha o menu ao clicar em qualquer outro lugar
+useEffect(() => {
+  const closeMenu = () => setContextMenu(null);
+  window.addEventListener('click', closeMenu);
+  return () => window.removeEventListener('click', closeMenu);
+}, []);
+
+
+// context menu option ==> separate audio
+
+const separateAudio = async (clip: Clip) => 
+{
+
+  var sourcePath, destPath: string
+  const audio = `${clip.name.split('.').slice(0, -1).join('.')}.mp3`
+
+  console.log('clip name', clip)
+
+
+
+  //if is not mute it is because the audio is in separate_audio
+  if(!clip.mute)
+  { 
+    sourcePath = `${currentProjectPath}/extracted_audios/${audio}`
+    destPath = `${currentProjectPath}/videos/${audio}`
+
+    console.log('sourcePath', sourcePath)
+
+      try
+      {
+          await invoke<string>('copy_file', { 
+          source: sourcePath, 
+          destination: destPath 
+          });
+
+
+              setTracks(  (prev) => 
+                {
+            
+                    const newTrackId = prev.length > 0 ? Math.max(...prev.map(t => t.id)) + 1 : 0; 
+                    const filename = destPath.replace(/^.*[\\/]/, '');
+                  
+                    
+                    const updatedTracks = [...prev, { 
+                      id: newTrackId, 
+                      type: 'audio'
+                    }];
+
+                    
+                    const newClip: Clip = {
+                    ...clip, id: crypto.randomUUID(), 
+                            name: filename, 
+                            color: getRandomColor(),
+                            trackId: newTrackId
+                    };
+
+
+                    setClips(prevClips => [...prevClips, newClip] );
+
+                    return updatedTracks
+
+
+
+
+
+
+
+
+
+
+                }
+
+
+              )
+
+          //if the clip is muted because the audio is out and we wanna undoing it, is just change the mute variable
+
+          const newclip = {... clip, mute: !clip.mute} 
+          setClips( prev => prev.map(c => c.id === clip.id ? newclip : c ) )
+
+          await loadAssets()
+
+          showNotify('Audio Extracted', "success") 
+
+      }
+      catch (error) {
+      
+        showNotify('Error in Audio Extract', "error") 
+        console.error('Error in copy_file', error);
+      }
+  }
+  else
+  {
+          try
+          {
+            const newclip = {... clip, mute: !clip.mute} 
+            setClips( prev => prev.map(c => c.id === clip.id ? newclip : c ) )
+            showNotify('Audio Restored', "success")
+          }
+          catch (error)
+          {
+             showNotify('Error in Audio Restore', "error")
+             console.log(error)
+          }
+  }
+
+
+
+
+
+
+
+}
+
+
+
 const handleCancelExport = async () => {
   try {
     // [English Comment] Signal Rust to kill the FFmpeg task
@@ -348,12 +474,16 @@ const startExport = async () => {
     defaultPath: `${safeName}.mp4`
   });
 
-  // [English Comment] If the user cancels the dialog, targetPath will be null
+  // If the user cancels the dialog, targetPath will be null
   if (!targetPath) return;
 
   setRenderStatus('rendering');
 
-  const clips_format = clips.map( c => { return {...c,path: `${currentProjectPath}/videos/${c.name}` ,trackId: c.trackId.toString(), type: knowTypeByAssetName(c.name)} })
+  const clips_format = clips.map( c => { return {
+    ...c,path: `${currentProjectPath}/videos/${c.name}` ,
+    trackId: c.trackId.toString(),
+     type: knowTypeByAssetName(c.name),
+      mute: c.mute ?? false} })
   
   console.log( clips_format.map(c => c.path) )
 
@@ -459,8 +589,14 @@ const updateAudio = () => {
     currentTime >= clip.start  && 
     currentTime <= (clip.start  + clip.duration) && 
     knowTypeByAssetName(clip.name) !== 'image' &&
-    tracks.find(t => t.id === clip.trackId)?.mute === false
+    (tracks.find(t => t.id === clip.trackId)?.mute === false ||
+    !(tracks.find(t => t.id === clip.trackId)?.mute)) &&
+    (clip?.mute === false ||
+    !(clip?.mute))
   );
+
+
+  console.log('cc clips',currentClips)
 
   if (currentClips.length == 0)
   {
@@ -481,6 +617,10 @@ const updateAudio = () => {
     setTopAudios(winner);
     console.log('winner is ', winner)
   }
+
+
+
+ 
 
 
   
@@ -2068,7 +2208,7 @@ const createClipOnNewTrack =  async (assetName: string, dropTime: number, beginm
 
   const path = `${currentProjectPath}/videos/${assetName}`
 
-  console.log('entrou no newtrack')
+  
   
   try
   {
@@ -2795,9 +2935,7 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
   {
       const droppedClip = JSON.parse(data);
 
-      console.log('data get', droppedClip)
-
-
+      
       // 1. Try to find the corresponding asset.
       const assetNow = assets.find(a => a.name === droppedClip.name);
       
@@ -2810,12 +2948,11 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
       const isNotType = tracks.find( t => t.id === trackId)?.type !== knowTypeByAssetName(droppedClip.name ,true)
 
 
-      console.log('data ', isBusy, isNotType )
+      
       
       if(!isBusy && !isNotType)
       {
-        console.log('caiu')
-        const newClip: Clip = {
+          const newClip: Clip = {
             id: crypto.randomUUID(), 
             name: droppedClip.name,
             start: dropTime,
@@ -2831,7 +2968,6 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
       }
       else
       {
-          console.log('lala')
           createClipOnNewTrack(droppedClip.name, dropTime, droppedClip.beginmoment)
           
 
@@ -3880,7 +4016,8 @@ return (
             const cacheKey = `${clip.id}-${clip.beginmoment}-${clip.duration}`;
             const thumbs = timelineThumbs[cacheKey];
             const assetTarget = assets.find( a => a.name === clip.name)
-
+            const isVideo = (assetTarget?.type  === 'video')
+            
             let margintitle = pixelsPerSecond > 30 ? -15 : -15
             const iconSize = pixelsPerSecond > 30 ? 17 : 17
 
@@ -3894,8 +4031,9 @@ return (
               <motion.div 
               key={clip.id} layoutId={clip.id}
               draggable="true"
+              onContextMenu={(e) => handleContextMenu(e, assetTarget?.type, clip)}
               onDragStart={(e) => handleDragStart(e, clip.color, track.id, clip.duration, clip.name, true, clip.id)}
-              onClick={(e) => { e.stopPropagation(); toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey); }}
+              onClick={(e) => { e.stopPropagation(); toggleClipSelection(clip.id, e.shiftKey || e.ctrlKey); setContextMenu(null) }}
               className={`absolute  inset-y-1.5 ${clip.color} rounded-md flex items-center shadow-lg cursor-grab active:cursor-grabbing border-2 ${
                 selectedClipIds.includes(clip.id) ? 'border-white ring-4 ring-white/10 z-30' : 'border-black/20'
               }`}
@@ -3904,6 +4042,33 @@ return (
                 width: clip.duration * pixelsPerSecond,
               }}
             >
+
+              {/* Context Menu (right click mouse) */}
+
+              {contextMenu &&  (
+                <div 
+                  className="fixed z-50 min-w-[160px] bg-zinc-900/90 backdrop-blur-md border border-zinc-700/50 shadow-xl rounded-lg py-1 animate-in fade-in zoom-in duration-100"
+                  style={{ top: contextMenu.y, left: contextMenu.x }}
+                >
+                  { contextMenu?.type === 'video' && (
+                      <button 
+                        onClick={() => {
+                          separateAudio(contextMenu?.clip);
+                          setContextMenu(null);
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm text-zinc-200 hover:bg-violet-600 hover:text-white transition-all flex items-center gap-3"
+                      >
+                        <Music size={14} className="opacity-70" />
+                        <span>  {contextMenu?.clip.mute ? 'Recover Audio' : 'Separate Audio'} </span>
+                      </button>
+                    )}
+
+                    
+                  </div>
+                )}
+                  
+
+
               {/* 1. Waveform - Ocupando o fundo proporcionalmente */}
               {assetTarget?.type === 'audio' && (
                 <div className="absolute inset-0 w-full h-full overflow-hidden pointer-events-none">
