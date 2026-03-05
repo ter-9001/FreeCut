@@ -92,8 +92,10 @@ interface ProjectFileData {
   projectName: string;
   assets: Asset[];
   clips: Clip[];
+  tracks: Tracks[];
   lastModified: number;
   copyOf?: string; // Pointer to another main{timestamp}.project file
+  
 }
 
 interface Asset {
@@ -239,8 +241,8 @@ export default function App() {
    * History Manager with a 100-step limit.
    * Uses a simple array-based stack to track clips and assets.
    */
-  const [history, setHistory] = useState<{ clips: Clip[], assets: Asset[] }[]>([]);
-  const [redoStack, setRedoStack] = useState<{ clips: Clip[], assets: Asset[] }[]>([]);
+  const [history, setHistory] = useState<{ clips: Clip[], assets: Asset[], tracks: Tracks[] }[]>([]);
+  const [redoStack, setRedoStack] = useState<{ clips: Clip[], assets: Asset[], tracks: Tracks[] }[]>([]);
 
 
   const [timelineHeight, setTimelineHeight] = useState(300); // Default height
@@ -1160,7 +1162,7 @@ const handlePaste = () => {
   
   const playheadTime = now_playheadpos / pixelsPerSecond;
   
-  saveHistory(clips, assets);
+  saveHistory(clips, assets, tracks);
 
   // 2. Find the reference point (the leftmost clip in the copied group)
   const minStart = Math.min(...clipsToPaste.map(c => c.start));
@@ -1316,32 +1318,53 @@ const handleTimelineMouseUp = () => {
    * Manually pushes a snapshot to history.
    * Should be called BEFORE the state is updated with the new change.
    */
-  const saveHistory = (currentClips: Clip[], currentAssets: Asset[]) => {
+  const saveHistory = (currentClips: Clip[], currentAssets: Asset[], tracks: Tracks[]) => {
     setHistory(prev => {
-      const newHistory = [...prev, { clips: currentClips, assets: currentAssets }];
+      const newHistory = [...prev, { clips: currentClips, assets: currentAssets, tracks: tracks }];
       return newHistory.length > MAX_HISTORY_STEPS ? newHistory.slice(1) : newHistory;
     });
     setRedoStack([]); // New action invalidates the redo path
   };
 
-  const handleUndo = () => {
+const handleUndo = () => {
   if (history.length === 0) return;
 
-  // 1. Lock history saving
+  // 1. Bloqueia salvamento automático durante o undo
   isUndoRedoAction.current = true;
 
-  const previousState = history[history.length - 1];
-  const newHistory = history.slice(0, -1);
+  // 2. Encontrar o último estado válido (que contenha tracks)
+  let previousState = null;
+  let validIndex = -1;
 
-  setRedoStack(prev => [...prev, { clips, assets }]);
-  
+  // Percorre do fim para o início
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i] && history[i].tracks) {
+      previousState = history[i];
+      validIndex = i;
+      break; 
+    }
+  }
+
+  // 3. Se não achou nada válido, aborta ou usa o estado atual
+  if (!previousState) {
+    console.warn("Nenhum estado válido encontrado no histórico.");
+    return;
+  }
+
+  // 4. Gerencia Pilha de Redo (Salva o estado atual antes de voltar)
+  setRedoStack(prev => [...prev, { clips, assets, tracks }]);
+
+  // 5. Atualiza os estados
   setClips(previousState.clips);
   setAssets(previousState.assets);
+  setTracks(previousState.tracks);
+
+  // 6. Remove do histórico tudo após o ponto para onde voltamos
+  const newHistory = history.slice(0, validIndex);
   setHistory(newHistory);
-  
+
   showNotify("Undo", "success");
 };
-
   const handleRedo = () => {
     if (redoStack.length === 0) return;
 
@@ -1351,10 +1374,11 @@ const handleTimelineMouseUp = () => {
     const nextState = redoStack[redoStack.length - 1];
     const newRedoStack = redoStack.slice(0, -1);
 
-    setHistory(prev => [...prev, { clips, assets }]);
+    setHistory(prev => [...prev, { clips, assets, tracks }]);
 
     setClips(nextState.clips);
     setAssets(nextState.assets);
+    setTracks(nextState.tracks)
     setRedoStack(newRedoStack);
     
     showNotify("Redo", "success");
@@ -1372,11 +1396,11 @@ const handleTimelineMouseUp = () => {
 
   //undo and redo 
 
-  const lastSavedState = useRef(JSON.stringify({ clips, assets }));
+  const lastSavedState = useRef(JSON.stringify({ clips, assets, tracks }));
 
 
   useEffect(() => {
-  const currentState = JSON.stringify({ clips, assets });
+  const currentState = JSON.stringify({ clips, assets, tracks });
   
   if (currentState !== lastSavedState.current) {
     // 1. Check if this change was triggered by Undo/Redo
@@ -1545,6 +1569,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
         projectName,
         assets,
         clips,
+        tracks,
         lastModified: Date.now()
       };
 
@@ -1637,7 +1662,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
     if (selectedClipIds.length === 0 && selectedAssets.length === 0) return;
 
     // 2. Save snapshot for the 100-step history
-    saveHistory(clips, assets);
+    saveHistory(clips, assets, tracks);
 
     // 3. Delete selected CLIPS
     if (selectedClipIds.length > 0) {
@@ -2684,6 +2709,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
 
 const openProject = async (path: string) => {
 
+  console.log('project path', path)
   localStorage.setItem("current_project_path", path);
   
   try
@@ -2699,8 +2725,11 @@ const openProject = async (path: string) => {
     // Update states first
     setClips(parsed.clips || []);
     setAssets(parsed.assets || []);
+    setTracks(parsed.tracks || []);
     setProjectName(parsed.projectName || "Unnamed Project");
 
+    /*
+    
     // 1. Find the maximum track ID securely.
     const maxTrackId = (parsed.clips || []).reduce((max, clip) => 
       clip.trackId > max ? clip.trackId : max, 
@@ -2721,6 +2750,8 @@ const openProject = async (path: string) => {
     });
 
     setTracks(newTracks);
+    
+    */
     
     // Now allow saving
     setIsProjectLoaded(true); 
@@ -3016,7 +3047,8 @@ const handleDropOnTimeline = (e: React.DragEvent, trackId: number) => {
       return {
         ...clip,
         start: targetStart,
-        trackId: targetTrack
+        trackId: targetTrack,
+        color: clip.trackId == targetTrack ? clip.color : getRandomColor()
       };
     });
 
