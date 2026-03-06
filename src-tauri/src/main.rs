@@ -96,6 +96,17 @@ async fn export_video(
         .map(|c| c.start + c.duration)
         .fold(0.0f64, |a, b| a.max(b));
 
+    println!("--- INICIANDO EXPORTAÇÃO ---");
+    println!("Recebendo {} clipes para renderização.", clips.len());
+    
+    for (index, clip) in clips.iter().enumerate() {
+        println!(
+            "Clip [{}]: Nome: {}, Início: {}s, Duração: {}s, duration: {}, beginmoment: {}",
+            index, clip.name, clip.start, clip.duration, clip.duration, clip.beginmoment
+        );
+    }
+    println!("----------------------------");
+
     // filter string
     let filter_complex = build_rendering_filter(&clips, total_duration);
 
@@ -104,10 +115,10 @@ async fn export_video(
         let path_lower = clip.path.to_lowercase();
         
         if path_lower.ends_with(".png") || path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg") {
-            args.push("-loop".to_string());
-            args.push("1".to_string());
-            args.push("-t".to_string());
-            args.push((total_duration + 1.0).to_string());
+            //args.push("-loop".to_string());
+            //args.push("1".to_string());
+            //args.push("-t".to_string());
+            //args.push((total_duration + 1.0).to_string());
         }
         
         args.push("-i".to_string());
@@ -129,7 +140,7 @@ async fn export_video(
 
     // Debug para o console
     //println!("--- Comando FFmpeg Executado ---");
-    //println!("ffmpeg {}", args.join(" "));
+    println!("ffmpeg {}", args.join(" "));
 
     // 5. Executar o Sidecar do Tauri
     let (mut rx, child) = app_handle
@@ -186,9 +197,94 @@ async fn export_video(
 
 
 use tauri::Emitter; // Adicione este import no topo
-
-
 fn build_rendering_filter(clips: &[Clip], total_duration: f64) -> String {
+    let mut filters = Vec::new();
+    let mut video_outputs: Vec<(usize, f64, f64)> = Vec::new();
+    let mut audio_outputs = Vec::new();
+
+    let centering_filter = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
+
+    for (i, clip) in clips.iter().enumerate() {
+        let path_lower = clip.path.to_lowercase();
+        let is_image = path_lower.ends_with(".png") || path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg");
+        
+        // --- Process video/image ---
+        if is_image {
+            filters.push(format!(
+                "[{}:v]{},setpts=PTS-STARTPTS+{}/TB[v{}]",
+                i, centering_filter, clip.start, i
+            ));
+        } else {
+            let mut clip_filters = Vec::new();
+            if let Some(fi) = clip.fadein {
+                if fi > 0.0 { clip_filters.push(format!("fade=t=in:st=0:d={}", fi)); }
+            }
+            if let Some(fo) = clip.fadeout {
+                if fo > 0.0 {
+                    let start_fade_out = clip.duration - fo;
+                    clip_filters.push(format!("fade=t=out:st={}:d={}", start_fade_out, fo));
+                }
+            }
+
+            let filter_str = if clip_filters.is_empty() {
+                String::new()
+            } else {
+                format!(",{}", clip_filters.join(","))
+            };
+
+            filters.push(format!(
+                "[{}:v]trim=start={}:duration={},{}{},setpts=PTS-STARTPTS+{}/TB[v{}]",
+                i, clip.beginmoment, clip.duration, centering_filter, filter_str, clip.start, i
+            ));
+        }
+
+        // --- Audio Processing (A correção está aqui) ---
+        if !is_image {
+            let delay_ms = (clip.start * 1000.0).round() as i64;
+            let volume = if clip.mute.unwrap_or(false) { "0" } else { "1" };
+
+            // 1. atrim: corta o áudio original
+            // 2. asetpts=PTS-STARTPTS: RESETA o tempo para 0 (essencial quando beginmoment > 0)
+            // 3. adelay: empurra para a posição correta na timeline
+            filters.push(format!(
+                "[{}:a]atrim=start={}:duration={},asetpts=PTS-STARTPTS,volume={},adelay={}|{},aresample=async=1[a{}]",
+                i, clip.beginmoment, clip.duration, volume, delay_ms, delay_ms, i
+            ));
+            audio_outputs.push(format!("[a{}]", i));
+        }
+    }
+
+    // --- Final Layers ---
+    filters.push(format!("color=s=1920x1080:c=black:r=30:d={}[bg]", total_duration));
+    
+    let mut current_v_layer = "bg".to_string();
+    for (idx, (input_idx, start, duration)) in clips.iter().enumerate().filter(|(_, c)| {
+        let p = c.path.to_lowercase();
+        p.ends_with(".png") || p.ends_with(".jpg") || p.ends_with(".jpeg") || p.ends_with(".mp4") || p.ends_with(".mkv") || p.ends_with(".mov") || p.ends_with(".avi")
+    }).map(|(i, c)| (i, c.start, c.duration)).enumerate() {
+        let next_v_layer = if idx == clips.len() - 1 { "outv_pre".to_string() } else { format!("l{}", idx) };
+        filters.push(format!(
+            "[{}] [v{}] overlay=enable='between(t,{},{})' [ {} ]",
+            current_v_layer, input_idx, start, start + duration, next_v_layer
+        ));
+        current_v_layer = next_v_layer;
+    }
+    filters.push(format!("[{}]format=yuv420p[outv]", current_v_layer));
+
+    if audio_outputs.is_empty() {
+        filters.push(format!("anullsrc=r=44100:cl=stereo:d={}[outa]", total_duration));
+    } else {
+        filters.push(format!(
+            "{}amix=inputs={}:duration=longest:dropout_transition=99999[outa]",
+            audio_outputs.join(""),
+            audio_outputs.len()
+        ));
+    }
+
+    filters.join(";")
+}
+
+fn build_rendering_filter_old(clips: &[Clip], total_duration: f64) -> String {
     let mut filters = Vec::new();
     let mut video_outputs = Vec::new();
     let mut audio_outputs = Vec::new();

@@ -484,11 +484,21 @@ const startExport = async () => {
 
   setRenderStatus('rendering');
 
+  const sanitizeNumber = (num: number): number => {
+  return Math.round(num * 100) / 100;
+};
+
   const clips_format = clips.map( c => { return {
     ...c,path: `${currentProjectPath}/videos/${c.name}` ,
     trackId: c.trackId.toString(),
      type: knowTypeByAssetName(c.name),
-      mute: c.mute ?? false} })
+      mute: c.mute ?? false,
+      beginmoment: sanitizeNumber(c.beginmoment),
+  duration: sanitizeNumber(c.duration),
+  start: sanitizeNumber(c.start)
+    }})
+
+      console.log('cf lalala ', clips_format)
   
   console.log( clips_format.map(c => c.path) )
 
@@ -1792,7 +1802,12 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
       if (e.key === 'Delete' || e.key === 'Backspace') {
         handleDeleteEverything();
       }
-      
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      startExport();
+    }
+
 
 
         // Undo: Ctrl+Z or Cmd+Z
@@ -3353,7 +3368,8 @@ const PropertiesAside = () => {
   const isText = selectedClip.type === "text";
 
   return (
-    <aside className="w-72 bg-[#090909] border-l border-white/5 flex flex-col h-full overflow-hidden animate-in slide-in-from-right duration-300">
+    <aside className="w-72 bg-[#090909] border-l border-white/5 flex flex-col h-full overflow-hidden animate-in slide-in-from-right duration-300"
+    >
       {/* Header */}
       <div className="p-4 border-b border-white/5 flex items-center gap-3">
         {/* Background do ícone com 15% de opacidade via Hex */}
@@ -3462,13 +3478,30 @@ const PropertiesAside = () => {
               <input type="text" 
               value={selectedClip.fadein ? 
                 selectedClip.fadein : 0
-               } placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
+               }
+               onChange={(e) => {
+                e.stopPropagation()
+                  const val = parseFloat(e.target.value) || 0;
+                  setClips(prev => prev.map((c) => 
+                    c.id === selectedClip.id ? { ...c, fadein: val } : c
+                  ));
+                }}
+               placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
             </PropertyRow>
             <PropertyRow label="Fade Out (s)" keyframable={false}>
               <input type="text" 
               value={selectedClip.fadeout ? 
                 selectedClip.fadeout : 0
                }
+               onChange={(e) => {
+                e.stopPropagation()
+                  const val = parseFloat(e.target.value) || 0;
+                  setClips(prev => prev.map((c) => 
+                    c.id === selectedClip.id ? { ...c, fadeout: val } : c
+                  ));
+                }}
+
+
                placeholder="0s" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none" />
             </PropertyRow>
           </div>
