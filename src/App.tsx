@@ -54,7 +54,8 @@ import {
   Wind,
   Diamond,
   MicOffIcon,
-  LockIcon
+  LockIcon,
+  EyeOff
   
 } from 'lucide-react';
 
@@ -76,6 +77,12 @@ interface Project {
   path: string;
 }
 
+interface Keyframe {
+  id: string;
+  time: number;  
+  value: number; 
+}
+
 interface Clip {
   id: string;
   name: string;
@@ -90,6 +97,15 @@ interface Clip {
   fadeout?: number;
   fadeinAudio?: number;
   fadeoutAudio?: number;
+  keyframes?: {
+  volume?: Keyframe[];
+  opacity?: Keyframe[];
+  speed?: Keyframe[];
+  rotation3d?: Keyframe[];
+};
+
+
+activeKeyframeView?: 'volume' | 'opacity' | 'speed' | 'rotation3d' | null;
 
 
 }
@@ -120,6 +136,12 @@ interface Tracks
   mute?: boolean;
 
 }
+
+
+
+
+// No seu tipo Clip, adicione:
+
 
 const PIXELS_PER_SECOND = 5;
 
@@ -653,75 +675,16 @@ const audioPlayersRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
 //Render all audios of the current time
 
-/*
-useEffect(() => {
-  if (!topAudios || topAudios.length === 0 || !isPlaying) {
-    audioPlayersRef.current.forEach(p => p.pause());
-    return;
-  }
-
-
-  const currentIds = new Set(topAudios?.map(clip => clip.id));
-
-  audioPlayersRef.current.forEach((player, id) => {
-    if (!currentIds.has(id)) {
-      player.pause();
-      player.src = ""; // Libera o recurso do navegador
-      player.load();
-      audioPlayersRef.current.delete(id);
-    }
-  });
-
-  topAudios.forEach(clip => {
-    let player = audioPlayersRef.current.get(clip.id);
-    
-    //images are filter in UpdateAudio so all videos are really videos no metter how knowTypeByAssetName is use
-    const audio = `${clip.name.split('.').slice(0, -1).join('.')}.mp3`
-    const path =  knowTypeByAssetName(clip.name) === 'video' ? `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/extracted_audios/${audio}`)}` :
-    `http://127.0.0.1:1234/${encodeURIComponent(`${currentProjectPath}/videos/${clip.name}`)}`
-
-    if (!player) {
-      player = new Audio(path);
-      audioPlayersRef.current.set(clip.id, player);
-    }
-
-    const targetTime = (currentTimeRef.current - clip.start) + (clip.beginmoment || 0);
-
-    const syncAndPlay = () => {
-      if (targetTime >= 0 && targetTime < player!.duration) {
-        player!.currentTime = targetTime;
-      }
-      if (isPlaying) player!.play().catch(() => {});
-    };
-
-    //If the file header has already been loaded, skip to the correct time; otherwise, wait for the metadata.
-    if (player.readyState >= 1) { 
-      syncAndPlay();
-    } else {
-      
-      player.addEventListener('loadedmetadata', syncAndPlay, { once: true });
-    }
-  });
-
-
-
-
-}, [topAudios, isPlaying]);
-
-*/
-
 useEffect(() => {
   if (!topAudios || topAudios.length === 0 || !isPlaying) {
     audioPlayersRef.current.forEach(p => {
       p.pause();
-      p.volume = 0; // Reset de volume ao pausar
+      p.volume = 0;
     });
     return;
   }
 
   const currentIds = new Set(topAudios.map(clip => clip.id));
-
-  // Limpeza de players antigos
   audioPlayersRef.current.forEach((player, id) => {
     if (!currentIds.has(id)) {
       player.pause();
@@ -729,7 +692,15 @@ useEffect(() => {
     }
   });
 
-  // Loop principal de atualização dos players
+  // Função para converter o valor do Keyframe (0 a 1) para Ganho Linear via dB
+  // Mapeamos 0.0 (KF) -> -50dB e 1.0 (KF) -> +50dB
+  const keyframeToLinear = (kfValue) => {
+    const db = (kfValue * 100) - 50; // Transforma 0...1 em -50...50
+    // Fórmula: VolumeLinear = 10^(db / 20)
+    const linear = Math.pow(10, db / 20);
+    return linear;
+  };
+
   topAudios.forEach(clip => {
     let player = audioPlayersRef.current.get(clip.id);
     
@@ -746,33 +717,38 @@ useEffect(() => {
     const targetTime = (currentTimeRef.current - clip.start) + (clip.beginmoment || 0);
 
     const applyFadeAndSync = () => {
-      
       if (targetTime >= 0 && targetTime < player!.duration) {
         player!.currentTime = targetTime;
       }
       
       if (isPlaying) player!.play().catch(() => {});
 
-      // Fade logic
       const updateVolume = () => {
         if (!player || player.paused) return;
 
-        const relativeTime = player.currentTime - (clip.beginmoment || 0); // Tempo relativo ao início do recorte
+        const relativeTime = player.currentTime - (clip.beginmoment || 0);
         const fadein = clip.fadeinAudio || 0;
         const fadeout = clip.fadeoutAudio || 0;
-        let vol = 1.0;
-
-        // Cálculo de Fade In
+        
+        // 1. Cálculo do Fade (Linear 0 a 1)
+        let fadeVol = 1.0;
         if (relativeTime < fadein && fadein > 0) {
-          vol = relativeTime / fadein;
-        }
-        // Cálculo de Fade Out
-        else if (relativeTime > (clip.duration - fadeout) && fadeout > 0) {
+          fadeVol = relativeTime / fadein;
+        } else if (relativeTime > (clip.duration - fadeout) && fadeout > 0) {
           const timeRemaining = clip.duration - relativeTime;
-          vol = timeRemaining / fadeout;
+          fadeVol = timeRemaining / fadeout;
+
         }
 
-        player.volume = Math.max(0, Math.min(1, vol));
+        // 2. Cálculo do Keyframe (Convertendo dB para Linear)
+        const kfValue = getInterpolatedValue(relativeTime, clip.keyframes?.volume || []);
+        const kfLinear = keyframeToLinear(kfValue);
+
+        // 3. Volume Final
+        // Como o player.volume morre em 1.0, limitamos aqui para o preview não quebrar.
+        // No Export (FFmpeg), o valor kfLinear completo será usado.
+        const combinedVol = fadeVol * kfLinear;
+        player.volume = Math.max(0, Math.min(1, combinedVol));
         
         if (isPlaying) requestAnimationFrame(updateVolume);
       };
@@ -790,6 +766,39 @@ useEffect(() => {
 }, [topAudios, isPlaying]);
 
 
+
+const getInterpolatedValue = (time: number, keyframes: Keyframe[]): number => {
+  // 1. Se não houver keyframes, retorna o valor padrão (meio da escala = 0dB)
+  if (!keyframes || keyframes.length === 0) return 0.5;
+
+  // 2. Garante que estão ordenados por tempo (importante para a busca)
+  const sorted = [...keyframes].sort((a, b) => a.time - b.time);
+
+  // 3. Caso o tempo esteja ANTES do primeiro keyframe
+  if (time <= sorted[0].time) return sorted[0].value;
+
+  // 4. Caso o tempo esteja DEPOIS do último keyframe
+  if (time >= sorted[sorted.length - 1].time) return sorted[sorted.length - 1].value;
+
+  // 5. Encontra o intervalo entre dois keyframes
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const startKf = sorted[i];
+    const endKf = sorted[i + 1];
+
+    if (time >= startKf.time && time <= endKf.time) {
+      // Cálculo de Interpolação Linear (LERP)
+      // Descobre a porcentagem do progresso entre o ponto A e o ponto B
+      const rangeTime = endKf.time - startKf.time;
+      const progress = (time - startKf.time) / rangeTime;
+
+      // Aplica o progresso à diferença de valores
+      const rangeValue = endKf.value - startKf.value;
+      return startKf.value + progress * rangeValue;
+    }
+  }
+
+  return 0.5;
+};
 
 useEffect(() => {
   setCurrentTime(playheadPos/pixelsPerSecond)
@@ -3646,6 +3655,124 @@ const PropertiesAside = () => {
   );
 };
 
+//Keyframes System
+const addKeyframe = (e: React.MouseEvent, clipId: string) => {
+  const clip = clips.find(c => c.id === clipId);
+  // Só adiciona se houver uma visão de keyframe ativa (ex: 'volume')
+  if (!clip || !clip.activeKeyframeView) return;
+
+  const rect = e.currentTarget.getBoundingClientRect();
+  const clickX = e.clientX - rect.left;
+  const clickY = e.clientY - rect.top;
+
+  const time = clickX / pixelsPerSecond;
+  // Inverte o Y: clique no topo = 1.0 (100%), clique na base = 0.0 (0%)
+  const value = Math.max(0, Math.min(1, 1 - (clickY / rect.height)));
+
+  setClips(prev => prev.map(c => {
+    if (c.id !== clipId) return c;
+    
+    const view = c.activeKeyframeView as keyof NonNullable<Clip['keyframes']>;
+    const currentKfs = c.keyframes?.[view] || [];
+
+    // Se já houver um ponto muito perto no tempo, não cria outro
+    if (currentKfs.some(k => Math.abs(k.time - time) < 0.05)) return c;
+
+    const newKeyframe: Keyframe = {
+      id: crypto.randomUUID(),
+      time: time,
+      value: value
+    };
+
+    return {
+      ...c,
+      keyframes: {
+        ...c.keyframes,
+        [view]: [...currentKfs, newKeyframe].sort((a, b) => a.time - b.time)
+      }
+    };
+  }));
+};
+
+{/* Função auxiliar para calcular o Y em pixels baseado na altura do clipe (ex: 40px) */}
+const calculateY = (value: number, height: number) => {
+  return (1 - value) * height;
+};
+
+// No seu código dentro do SVG:
+
+
+
+const handleKeyframeDrag = (
+  e: React.MouseEvent, 
+  clipId: string, 
+  kfId: string, 
+  view: 'volume' | 'opacity' | 'speed' | 'rotation3d'
+) => {
+  e.stopPropagation();
+  e.preventDefault();
+
+  const onMouseMove = (moveEvent: MouseEvent) => {
+    const clipElement = document.getElementById(`clip-${clipId}`);
+    if (!clipElement) return;
+
+    const rect = clipElement.getBoundingClientRect();
+    
+    // Calcula novos valores baseados na posição do mouse
+    const newTime = (moveEvent.clientX - rect.left) / pixelsPerSecond;
+    const newValue = Math.max(0, Math.min(1, 1 - (moveEvent.clientY - rect.top) / rect.height));
+
+    setClips(prev => prev.map(c => {
+      if (c.id !== clipId) return c;
+
+      const kfs = [...(c.keyframes?.[view] || [])];
+      const idx = kfs.findIndex(k => k.id === kfId);
+      if (idx === -1) return c;
+
+      // --- LOGICA DE RESPEITO AOS VIZINHOS ---
+      const minTime = kfs[idx - 1]?.time || 0;
+      const maxTime = kfs[idx + 1]?.time || c.duration;
+
+      kfs[idx] = {
+        ...kfs[idx],
+        time: Math.max(minTime, Math.min(maxTime, newTime)),
+        value: newValue
+      };
+
+      return {
+        ...c,
+        keyframes: { ...c.keyframes, [view]: kfs }
+      };
+    }));
+  };
+
+  const onMouseUp = () => {
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', onMouseUp);
+  };
+
+  document.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('mouseup', onMouseUp);
+};
+
+const deleteKeyframe = (clipId: string, kfId: string, view: string) => {
+  setClips(prev => prev.map(c => {
+    if (c.id !== clipId) return c;
+    
+    const currentKfs = c.keyframes?.[view as keyof NonNullable<Clip['keyframes']>] || [];
+    const filteredKfs = currentKfs.filter(k => k.id !== kfId);
+
+    return {
+      ...c,
+      keyframes: {
+        ...c.keyframes,
+        [view]: filteredKfs
+      }
+    };
+  }));
+};
+
+
 
   // --- RENDER ---
 return (
@@ -4354,32 +4481,208 @@ return (
                 left: clip.start * pixelsPerSecond,
                 width: clip.duration * pixelsPerSecond,
               }}
+
+               onDoubleClick={(e) => addKeyframe(e, clip.id)}
             >
 
               {/* Context Menu (right click mouse) */}
 
-              {contextMenu &&  (
-                <div 
-                  className="fixed z-50 min-w-[160px] bg-zinc-900/90 backdrop-blur-md border border-zinc-700/50 shadow-xl rounded-lg py-1 animate-in fade-in zoom-in duration-100"
-                  style={{ top: contextMenu.y, left: contextMenu.x }}
-                >
-                  { contextMenu?.type === 'video' && (
-                      <button 
-                        onClick={() => {
-                          separateAudio(contextMenu?.clip);
-                          setContextMenu(null);
-                        }}
-                        className="w-full text-left px-3 py-2 text-sm text-zinc-200 hover:bg-violet-600 hover:text-white transition-all flex items-center gap-3"
-                      >
-                        <Music size={14} className="opacity-70" />
-                        <span>  {contextMenu?.clip.mute ? 'Recover Audio' : 'Separate Audio'} </span>
-                      </button>
-                    )}
+             {contextMenu && (() => {
+             
+             const menuHeight = 180; 
+              const menuWidth = 200;  
+              
+              const overflowY = contextMenu.y + menuHeight > window.innerHeight;
+              
+              const overflowX = contextMenu.x + menuWidth > window.innerWidth;
 
-                    
-                  </div>
-                )}
+              const adjustedY = overflowY ? contextMenu.y - menuHeight : contextMenu.y;
+              const adjustedX = overflowX ? contextMenu.x - menuWidth : contextMenu.x;
+
+              return (
+                
+
+                      <div 
+                        className="fixed z-50 min-w-[200px] bg-zinc-900/95 backdrop-blur-xl border border-white/10 shadow-2xl rounded-lg py-1.5 animate-in fade-in zoom-in duration-100"
+                        style={{ top: adjustedY, left: adjustedX }}
+                      >
+                        {/* Opção: Separate/Recover Audio (Apenas Vídeo) */}
+                        {contextMenu?.type === 'video' && (
+                          <>
+                            <button 
+                              onClick={() => {
+                                separateAudio(contextMenu?.clip);
+                                setContextMenu(null);
+                              }}
+                              className="w-full text-left px-3 py-2 text-sm text-zinc-200 hover:bg-violet-600 hover:text-white transition-colors flex items-center gap-3"
+                            >
+                              <Music size={14} className="opacity-70" />
+                              <span>{contextMenu?.clip.mute ? 'Recover Audio' : 'Separate Audio'}</span>
+                            </button>
+                            <div className="h-[1px] bg-white/5 my-1 mx-2" />
+                          </>
+                        )}
+
+
+                        <button 
+                          onClick={() => {
+                            setClips(prev => prev.map(c => 
+                              c.id === contextMenu.clip.id ? { ...c, activeKeyframeView: null } : c
+                            ));
+                            setContextMenu(null);
+                          }}
+                          className="w-full text-left px-3 py-2 text-sm text-amber-400 hover:bg-zinc-800 transition-all flex items-center gap-3"
+                        >
+                          <EyeOff size={14} />
+                          <span>Hide Keyframes</span>
+                        </button>
+
+
+                        {/* Opção KEYFRAMABLE com Submenu Lateral */}
+                        <div className="relative group">
+                          <div 
+                            className="w-full text-left px-3 py-2 text-sm text-zinc-200 
+                                      group-hover:bg-zinc-800 transition-colors flex items-center justify-between cursor-default"
+                          >
+                            <div className="flex items-center gap-3">
+                              <Diamond size={14} className="text-violet-400 opacity-80" />
+                              <span className="font-medium">Keyframable</span>
+                            </div>
+                            <SkipForward size={12} className="opacity-40" />
+                          </div>
+
+                          {/* Submenu Lateral */}
+                          <div className="absolute left-[calc(100%-4px)] top-[-6px] invisible group-hover:visible opacity-0 group-hover:opacity-100
+                                          min-w-[160px] bg-zinc-900 border border-white/10 shadow-2xl rounded-lg py-1.5 
+                                          transition-all duration-150 transform translate-x-1 group-hover:translate-x-2">
+                            
+                            {[
+                              { label: 'Volume', value: 'volume', icon: <Volume2 size={14} /> },
+                              { label: 'Opacity', value: 'opacity', icon: <Layers size={14} /> },
+                              { label: 'Speed', value: 'speed', icon: <Clock size={14} /> },
+                              { label: '3D Rotation', value: 'rotation3d', icon: <Rotate3d size={14} /> },
+                            ].map((sub) => (
+                              <button
+                                key={sub.value}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  
+                                  // ATIVA A VISÃO GRÁFICA NO CLIPE
+                                  setClips(prev => prev.map(c => 
+                                    c.id === contextMenu.clip.id 
+                                      ? { ...c, activeKeyframeView: sub.value as any } 
+                                      : c
+                                  ));
+                                  
+                                  setContextMenu(null);
+                                }}
+                                className="w-full text-left px-3 py-2 text-[12px] text-zinc-300 hover:bg-violet-600 hover:text-white transition-colors flex items-center gap-3"
+                                >
+                                  <span className="opacity-50">{sub.icon}</span>
+                                  <span>{sub.label}</span>
+                                </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Outras opções padrão (Exemplo: Delete) */}
+                        <div className="h-[1px] bg-white/5 my-1 mx-2" />
+                        <button 
+                          onClick={() => {
+                            setClips(prev => prev.filter(c => c.id !== contextMenu.clip.id));
+                            setContextMenu(null);
+                          }}
+                          className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-600 hover:text-white transition-colors flex items-center gap-3"
+                        >
+                          <X size={14} className="opacity-70" />
+                          <span 
+                          
+                          onClick={() => {
+                            setClips( prev => prev.filter( c => c !== clip))
+                          }}
+                          
+                          
+                          >Remove Clip</span>
+                        </button>
+                      </div>
+
+
+
+
+
+              );
+            })()}
                   
+
+              {/*Keyframes system */}
+
+
+          {clip.activeKeyframeView && (
+            <div className="absolute inset-0 w-full h-full z-50 overflow-visible">
+              <svg 
+                className="w-full h-full overflow-visible cursor-crosshair pointer-events-auto"
+                onDoubleClick={(e) => addKeyframe(e, clip.id)}
+              >
+                {/* 1. Linha de fundo (Guia) */}
+                <line 
+                  x1="0" y1="50%" x2="100%" y2="50%" 
+                  stroke="white" strokeWidth="0.5" strokeDasharray="4 4" opacity="0.2" 
+                />
+
+                {/* 2. A Linha de Keyframes Branca */}
+                {clip.keyframes?.[clip.activeKeyframeView] && clip.keyframes[clip.activeKeyframeView]!.length > 0 && (
+                  <polyline
+                  fill="none"
+                  stroke="white"
+                  strokeWidth="2"
+                  className="drop-shadow-[0_0_3px_rgba(255,255,255,0.5)]"
+                  points={(clip.keyframes?.[clip.activeKeyframeView!] || [])
+                    .map(kf => {
+                      const x = kf.time * pixelsPerSecond;
+                      const y = calculateY(kf.value, 40); // 40 é a altura da sua track
+                      return `${x},${y}`;
+                    })
+                    .join(' ')}
+                />
+                )}
+
+                {/* 3. Os Pontos Arrastáveis */}
+                {(clip.keyframes?.[clip.activeKeyframeView] || []).map((kf) => (
+                  <circle
+                    key={kf.id}
+                    cx={kf.time * pixelsPerSecond}
+                    cy={`${(1 - kf.value) * 100}%`}
+                    r="5"
+                    fill="white"
+                    stroke="#7c3aed"
+                    strokeWidth="2"
+                    className="cursor-move hover:scale-150 transition-transform pointer-events-auto"
+                    onMouseDown={(e) => handleKeyframeDrag(e, clip.id, kf.id, clip.activeKeyframeView!)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      deleteKeyframe(clip.id, kf.id, clip.activeKeyframeView!);
+                    }}
+                  />
+                ))}
+              </svg>
+              
+              {/* Badge indicando o que estamos editando */}
+              <div className="absolute top-1 left-1 bg-violet-600 text-[8px] px-1 rounded uppercase font-bold text-white opacity-70">
+                Editing {clip.activeKeyframeView}
+              </div>
+              <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                setClips(prev => prev.map(c => c.id === clip.id ? { ...c, activeKeyframeView: null } : c));
+              }}
+              className="bg-zinc-800 hover:bg-red-600 text-white rounded-full p-0.5 transition-colors"
+            >
+              <X size={8} />
+            </button>
+            </div>
+          )}
+
 
 
               {/* 1. Waveform - Ocupando o fundo proporcionalmente */}

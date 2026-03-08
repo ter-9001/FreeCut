@@ -29,7 +29,6 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 
-//use tauri::std::process::Command;
 use tauri_plugin_shell::ShellExt;
 use tauri::Manager;
 use std::process::Stdio;
@@ -64,7 +63,21 @@ pub struct VideoMetadata {
 
 use serde::{Deserialize, Serialize};
 
-//  Struct to represent the Timeline Clips from Frontend
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Keyframe {
+    pub id: String,
+    pub time: f64,
+    pub value: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Keyframes {
+    pub volume: Option<Vec<Keyframe>>,
+    pub opacity: Option<Vec<Keyframe>>,
+    pub speed: Option<Vec<Keyframe>>,
+    pub rotation3d: Option<Vec<Keyframe>>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Clip {
     pub id: String,
@@ -73,18 +86,26 @@ pub struct Clip {
     pub start: f64,
     pub duration: f64,
     pub beginmoment: f64,
-    pub trackId: String,
+    #[serde(rename = "trackId")]
+    pub track_id: String, // Mantive String para bater com seu código anterior, mas mudei o binding
     #[serde(rename = "type")]
     pub clip_type: String,
     #[serde(default)]
     pub mute: Option<bool>,
     pub fadein: Option<f64>,
     pub fadeout: Option<f64>,
-    pub fadeinAudio: Option<f64>,
-    pub fadeoutAudio: Option<f64>
-
-
+    pub fadein_audio: Option<f64>, // Recomendado usar snake_case no Rust
+    pub fadeout_audio: Option<f64>,
+    
+    // Opcional: para suportar a nova estrutura de keyframes
+    pub keyframes: Option<Keyframes>,
+    
+    #[serde(rename = "activeKeyframeView")]
+    pub active_keyframe_view: Option<String>,
 }
+
+use tauri::Emitter; // Adicione este import no topo
+
 
 
 #[tauri::command]
@@ -127,6 +148,7 @@ async fn export_video(
         args.push("-i".to_string());
         args.push(clip.path.clone());
     }
+
 
     args.extend([
         "-filter_complex".to_string(), filter_complex,
@@ -199,10 +221,10 @@ async fn export_video(
 }
 
 
-fn build_rendering_filter(clips: &[Clip], total_duration: f64) -> String {
+pub fn build_rendering_filter(clips: &[Clip], total_duration: f64) -> String {
     let mut filters = Vec::new();
     let mut audio_outputs = Vec::new();
-    let mut video_layers = Vec::new(); // Para rastrear apenas quem tem vídeo
+    let mut video_layers = Vec::new();
 
     let centering_filter = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
 
@@ -211,199 +233,87 @@ fn build_rendering_filter(clips: &[Clip], total_duration: f64) -> String {
         let is_image = path_lower.ends_with(".png") || path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg");
         let is_audio = clip.clip_type == "audio" || path_lower.ends_with(".mp3") || path_lower.ends_with(".wav");
 
-        // --- PROCESSAMENTO DE VÍDEO/IMAGEM ---
+        // --- Processamento de Vídeo/Imagem ---
         if !is_audio {
+            let mut v_filters = Vec::new();
+            
             if is_image {
                 filters.push(format!(
                     "[{}:v]{},setpts=PTS-STARTPTS+{}/TB[v{}]",
                     i, centering_filter, clip.start, i
                 ));
             } else {
-                let mut v_effects = Vec::new();
+                // Fade In/Out de Vídeo (Opcional se não usar keyframes de opacidade ainda)
                 if let Some(fi) = clip.fadein {
-                    if fi > 0.0 { v_effects.push(format!("fade=t=in:st=0:d={}", fi)); }
+                    if fi > 0.0 { v_filters.push(format!("fade=t=in:st=0:d={:.4}", fi)); }
                 }
                 if let Some(fo) = clip.fadeout {
                     if fo > 0.0 {
-                        v_effects.push(format!("fade=t=out:st={}:d={}", clip.duration - fo, fo));
+                        let st = clip.duration - fo;
+                        v_filters.push(format!("fade=t=out:st={:.4}:d={:.4}", st, fo));
                     }
                 }
 
-                let v_effects_str = if v_effects.is_empty() { String::new() } else { format!(",{}", v_effects.join(",")) };
+                let v_effects = if v_filters.is_empty() { "".to_string() } else { format!(",{}", v_filters.join(",")) };
 
                 filters.push(format!(
-                    "[{}:v]trim=start={}:duration={},{}{},setpts=PTS-STARTPTS+{}/TB[v{}]",
-                    i, clip.beginmoment, clip.duration, centering_filter, v_effects_str, clip.start, i
+                    "[{}:v]trim=start={:.4}:duration={:.4},setpts=PTS-STARTPTS,{}{},setpts=PTS+{}/TB[v{}]",
+                    i, clip.beginmoment, clip.duration, centering_filter, v_effects, clip.start, i
                 ));
             }
-            // Adiciona aos layers de vídeo para o overlay
             video_layers.push((i, clip.start, clip.duration));
         }
 
-        // --- PROCESSAMENTO DE ÁUDIO ---
-        // Apenas processa áudio se não for imagem
+        // --- Processamento de Áudio com Keyframes ---
         if !is_image {
-            let delay_ms = (clip.start * 1000.0).round() as i64;
-            let volume = if clip.mute.unwrap_or(false) { "0" } else { "1" };
-            
-            let mut a_effects = Vec::new();
-            if let Some(fi) = clip.fadeinAudio {
-                if fi > 0.0 { a_effects.push(format!("afade=t=in:st=0:d={}", fi)); }
-            }
-            if let Some(fo) = clip.fadeoutAudio {
-                if fo > 0.0 {
-                    a_effects.push(format!("afade=t=out:st={}:d={}", clip.duration - fo, fo));
-                }
-            }
+    let delay_ms = (clip.start * 1000.0).round() as i64;
+    
+    let vol_kfs = clip.keyframes.as_ref()
+        .and_then(|k| k.volume.as_ref())
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
 
-            let a_effects_str = if a_effects.is_empty() { String::new() } else { format!(",{}", a_effects.join(",")) };
+    let volume_expr = build_volume_expression(vol_kfs, clip.mute.unwrap_or(false));
 
-            filters.push(format!(
-                "[{}:a]atrim=start={}:duration={},asetpts=PTS-STARTPTS,volume={}{},adelay={}|{},aresample=async=1[a{}]",
-                i, clip.beginmoment, clip.duration, volume, a_effects_str, delay_ms, delay_ms, i
-            ));
-            audio_outputs.push(format!("[a{}]", i));
-        }
+    let mut a_filters = Vec::new();
+
+    // 1. Primeiro cortamos o áudio original
+    a_filters.push(format!("atrim=start={:.4}:duration={:.4}", clip.beginmoment, clip.duration));
+    
+    // 2. Resetamos o PTS para que o áudio comece em 0 internamente
+    a_filters.push("asetpts=PTS-STARTPTS".to_string());
+
+    // 3. Aplicamos o volume (dinâmico por keyframes ou fixo)
+    a_filters.push(format!("volume=eval=frame:volume='{}'", volume_expr));
+
+    // 4. Aplicamos o delay para posicionar na timeline
+    a_filters.push(format!("adelay={}|{}", delay_ms, delay_ms));
+
+    // 5. Unimos os filtros e definimos a saída [aX]
+    let filter_string = a_filters.join(",");
+    filters.push(format!("[{}:a]{}[a{}]", i, filter_string, i));
+    
+    audio_outputs.push(format!("[a{}]", i));
+}
     }
 
-    // --- COMPOSIÇÃO DE VÍDEO (OVERLAYS) ---
-    filters.push(format!("color=s=1920x1080:c=black:r=30:d={}[bg]", total_duration));
+    // --- Composição Final ---
+    filters.push(format!("color=s=1920x1080:c=black:r=30:d={:.4}[bg]", total_duration));
     
     let mut current_v_layer = "bg".to_string();
     for (idx, (input_idx, start, duration)) in video_layers.iter().enumerate() {
-        let is_last = idx == video_layers.len() - 1;
-        let next_v_layer = if is_last { "outv_pre".to_string() } else { format!("l{}", idx) };
-        
+        let next_v_layer = if idx == video_layers.len() - 1 { "outv_pre".to_string() } else { format!("l{}", idx) };
         filters.push(format!(
-            "[{}] [v{}] overlay=enable='between(t,{},{})' [ {} ]",
+            "[{}] [v{}] overlay=enable='between(t,{:.4},{:.4})' [ {} ]",
             current_v_layer, input_idx, start, start + duration, next_v_layer
         ));
         current_v_layer = next_v_layer;
     }
     
-    // Se não houver vídeos, o output é apenas o fundo preto
-    let final_v = if video_layers.is_empty() { "bg" } else { "outv_pre" };
-    filters.push(format!("[{}]format=yuv420p[outv]", final_v));
-
-    // --- MIXAGEM DE ÁUDIO ---
-    if audio_outputs.is_empty() {
-        filters.push(format!("anullsrc=r=44100:cl=stereo:d={}[outa]", total_duration));
-    } else {
-        filters.push(format!(
-            "{}amix=inputs={}:duration=longest:dropout_transition=99999[outa]",
-            audio_outputs.join(""),
-            audio_outputs.len()
-        ));
-    }
-
-    filters.join(";")
-}
-
-use tauri::Emitter; // Adicione este import no topo
-fn build_rendering_filter_old(clips: &[Clip], total_duration: f64) -> String {
-    let mut filters = Vec::new();
-    let mut video_outputs: Vec<(usize, f64, f64)> = Vec::new();
-    let mut audio_outputs = Vec::new();
-
-    let centering_filter = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
-
-    for (i, clip) in clips.iter().enumerate() {
-        let path_lower = clip.path.to_lowercase();
-        let is_image = path_lower.ends_with(".png") || path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg");
-        
-        // --- Process video/image ---
-        if is_image {
-            filters.push(format!(
-                "[{}:v]{},setpts=PTS-STARTPTS+{}/TB[v{}]",
-                i, centering_filter, clip.start, i
-            ));
-        } else {
-            let mut clip_filters = Vec::new();
-
-            //fadein and fadeout of image and videos
-            if let Some(fi) = clip.fadein {
-                if fi > 0.0 { clip_filters.push(format!("fade=t=in:st=0:d={}", fi)); }
-            }
-            if let Some(fo) = clip.fadeout {
-                if fo > 0.0 {
-                    let start_fade_out = clip.duration - fo;
-                    clip_filters.push(format!("fade=t=out:st={}:d={}", start_fade_out, fo));
-                }
-            }
-
-            let filter_str = if clip_filters.is_empty() {
-                String::new()
-            } else {
-                format!(",{}", clip_filters.join(","))
-            };
-
-            filters.push(format!(
-                "[{}:v]trim=start={}:duration={},{}{},setpts=PTS-STARTPTS+{}/TB[v{}]",
-                i, clip.beginmoment, clip.duration, centering_filter, filter_str, clip.start, i
-            ));
-        }
-
-        // --- Audio Processing (A correção está aqui) ---
-        if !is_image {
-            let delay_ms = (clip.start * 1000.0).round() as i64;
-            let volume = if clip.mute.unwrap_or(false) { "0" } else { "1" };
-
-            let mut audio_filters = Vec::new();
-
-            // 1. Fade In de Áudio
-            if let Some(fi) = clip.fadeinAudio {
-                if fi > 0.0 {
-                    // t=in: fade no início; st=0: começa no tempo 0 do clipe cortado; d: duração
-                    audio_filters.push(format!("afade=t=in:st=0:d={}", fi));
-                }
-            }
-
-            // 2. Fade Out de Áudio
-            if let Some(fo) = clip.fadeoutAudio {
-                if fo > 0.0 {
-                    // t=out: fade no final; st: tempo de início do fade relativo ao clipe
-                    let start_fade_out = clip.duration - fo;
-                    audio_filters.push(format!("afade=t=out:st={}:d={}", start_fade_out, fo));
-                }
-            }
-
-            // Transforma os filtros em string (se houver)
-            let fade_str = if audio_filters.is_empty() {
-                String::new()
-            } else {
-                format!(",{}", audio_filters.join(","))
-            };
-
-            // 1. atrim: corta o áudio original
-            // 2. asetpts=PTS-STARTPTS: RESETA o tempo para 0 (essencial quando beginmoment > 0)
-            // 3. adelay: empurra para a posição correta na timeline
-            filters.push(format!(
-                "[{}:a]atrim=start={}:duration={},asetpts=PTS-STARTPTS,volume={}{},adelay={}|{},aresample=async=1[a{}]",
-                i, clip.beginmoment, clip.duration, volume, fade_str, delay_ms, delay_ms, i
-            ));
-            audio_outputs.push(format!("[a{}]", i));
-        }
-    }
-
-    // --- Final Layers ---
-    filters.push(format!("color=s=1920x1080:c=black:r=30:d={}[bg]", total_duration));
-    
-    let mut current_v_layer = "bg".to_string();
-    for (idx, (input_idx, start, duration)) in clips.iter().enumerate().filter(|(_, c)| {
-        let p = c.path.to_lowercase();
-        p.ends_with(".png") || p.ends_with(".jpg") || p.ends_with(".jpeg") || p.ends_with(".mp4") || p.ends_with(".mkv") || p.ends_with(".mov") || p.ends_with(".avi")
-    }).map(|(i, c)| (i, c.start, c.duration)).enumerate() {
-        let next_v_layer = if idx == clips.len() - 1 { "outv_pre".to_string() } else { format!("l{}", idx) };
-        filters.push(format!(
-            "[{}] [v{}] overlay=enable='between(t,{},{})' [ {} ]",
-            current_v_layer, input_idx, start, start + duration, next_v_layer
-        ));
-        current_v_layer = next_v_layer;
-    }
-    filters.push(format!("[{}]format=yuv420p[outv]", current_v_layer));
+    filters.push(format!("[{}]format=yuv420p[outv]", if video_layers.is_empty() { "bg" } else { "outv_pre" }));
 
     if audio_outputs.is_empty() {
-        filters.push(format!("anullsrc=r=44100:cl=stereo:d={}[outa]", total_duration));
+        filters.push(format!("anullsrc=r=44100:cl=stereo:d={:.4}[outa]", total_duration));
     } else {
         filters.push(format!(
             "{}amix=inputs={}:duration=longest:dropout_transition=99999[outa]",
@@ -418,6 +328,63 @@ fn build_rendering_filter_old(clips: &[Clip], total_duration: f64) -> String {
 
 
 
+fn build_volume_expression(keyframes: &[Keyframe], mute: bool) -> String {
+    // 1. Se estiver mutado, volume é zero absoluto
+    if mute {
+        return "0".to_string();
+    }
+
+    // 2. Sem keyframes, volume padrão (1.0 = 0dB)
+    if keyframes.is_empty() {
+        return "1".to_string();
+    }
+
+    let mut sorted = keyframes.to_vec();
+    // Ordena por tempo para garantir que a lógica de 'between' funcione corretamente
+    sorted.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+
+    // 3. Apenas um keyframe: valor constante
+    if sorted.len() == 1 {
+        let db = (sorted[0].value * 100.0) - 50.0;
+        return format!("pow(10,({:.4})/20)", db);
+    }
+
+    let mut expr = String::new();
+    let mut open_parents = 0;
+
+    // 4. Valor fixo ANTES do primeiro keyframe
+    let first_db = (sorted[0].value * 100.0) - 50.0;
+    expr.push_str(&format!("if(lt(t,{:.4}),pow(10,({:.4})/20)", sorted[0].time, first_db));
+    open_parents += 1;
+
+    // 5. Interpolação Linear entre os pontos
+    for i in 0..sorted.len() - 1 {
+        let p1 = &sorted[i];
+        let p2 = &sorted[i + 1];
+        let db1 = (p1.value * 100.0) - 50.0;
+        let db2 = (p2.value * 100.0) - 50.0;
+
+        // Fórmula: db1 + (db2 - db1) * (t - t1) / (t2 - t1)
+        let lerp_db = format!(
+            "(({:.4})+(({:.4})-({:.4}))*(t-({:.4}))/(({:.4})-({:.4})))",
+            db1, db2, db1, p1.time, p2.time, p1.time
+        );
+
+        expr.push_str(&format!(",if(between(t,{:.4},{:.4}),pow(10,{}/20)", p1.time, p2.time, lerp_db));
+        open_parents += 1;
+    }
+
+    // 6. Valor fixo DEPOIS do último keyframe
+    let last_db = (sorted.last().unwrap().value * 100.0) - 50.0;
+    expr.push_str(&format!(",pow(10,({:.4})/20)", last_db));
+
+    // 7. Fechar todos os parênteses dos 'if's abertos
+    for _ in 0..open_parents {
+        expr.push_str(")");
+    }
+
+    expr
+}
 
 #[tauri::command]
 async fn cancel_export(state: State<'_, ExportState>) -> Result<(), String> {
