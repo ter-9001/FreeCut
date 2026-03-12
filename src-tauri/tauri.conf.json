@@ -41,7 +41,9 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "bin/ffmpeg"
+      "bin/ffmpeg",
+      "bin/exporter"
+
     ]
   },
   "plugins": {

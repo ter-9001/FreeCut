@@ -334,13 +334,28 @@ const [isPlaying2, setIsPlaying2] = useState(false);
 useEffect(() => {
   const unlisten = listen<number>('export-progress', (event) => {
     // Update the state you're using in the progress bar
+    console.log("Progresso recebido:", event.payload);
     setRenderPercent(event.payload);
+    
+      
   });
 
   return () => {
     unlisten.then(f => f());
   };
 }, []);
+
+
+
+useEffect(() => 
+  {
+
+    if(renderPercent == 100)
+      setRenderStatus('success')
+
+
+  }, [renderPercent])
+
 
 
 //context menu of clips (right click mouse)
@@ -480,7 +495,73 @@ const handleCancelExport = async () => {
   }
 };
 
+
+// Dentro da sua função de exportação no App.tsx
 const startExport = async () => {
+  try {
+    // 1. Ativa a UI de renderização e zera o progresso
+    setRenderPercent(0);
+    setRenderStatus('rendering'); 
+
+
+    if(!currentProjectPath)
+     return
+
+  const safeName = currentProjectPath.replace(/[^a-z0-0]/gi, '_').toLowerCase();
+
+  const targetPath = await save({
+    title: 'Export Final Video',
+    filters: [{
+      name: 'Video',
+      extensions: ['mp4']
+    }],
+    defaultPath: `${safeName}.mp4`
+  });
+
+  // If the user cancels the dialog, targetPath will be null
+  if (!targetPath) return;
+
+
+  const sanitizeNumber = (num: number): number => {
+  return Math.round(num * 100) / 100;
+};
+
+  const clips_format = clips.map( c => { return {
+    ...c,path: `${currentProjectPath}/videos/${c.name}` ,
+    trackId: c.trackId.toString(),
+     type: knowTypeByAssetName(c.name),
+      mute: c.mute ?? false,
+      beginmoment: sanitizeNumber(c.beginmoment),
+  duration: sanitizeNumber(c.duration),
+  start: sanitizeNumber(c.start)
+    }})
+
+      console.log('cf lalala ', clips_format)
+  
+  console.log( clips_format.map(c => c.path) )
+
+
+    // 2. Chama o Rust
+    await invoke('export_video', {
+      projectPath: currentProjectPath,
+      exportPath: targetPath, 
+      clips: clips_format
+    });
+
+    // Se chegar aqui, terminou com sucesso
+    // setIsRendering(false); // Opcional: fechar ao terminar
+
+    
+
+  } catch (error) {
+    console.error("Export Error:", error);
+    setRenderStatus('idle'); // Fecha se der erro
+  }
+};
+
+
+
+const startExport_Old = async () => {
   // 1. Trigger the export command
 
   setRenderPercent(0)

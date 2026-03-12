@@ -6,6 +6,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+/src-tauri/bin/build/*
+/src-tauri/bin/dist/*
+/src-tauri/bin/venv_export/*
 
 node_modules
 dist

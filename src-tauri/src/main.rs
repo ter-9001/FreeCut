@@ -107,136 +107,100 @@ pub struct Clip {
 use tauri::Emitter; // Adicione este import no topo
 
 
+#[derive(Serialize)]
+struct ExportPayload {
+    export_path: String,
+    total_duration: f64,
+    clips: Vec<Clip>,
+}
+
+use tauri::{ Runtime}; // Certifique-se de usar Emitter no Tauri v2
+
 
 #[tauri::command]
 async fn export_video(
-    app_handle: AppHandle,
-    state: State<'_, ExportState>,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, ExportState>,
+    project_path: String,
     export_path: String,
-    clips: Vec<Clip>,
+    clips: serde_json::Value,
 ) -> Result<(), String> {
-    // Set total duration max => start+ duration
-    let total_duration = clips.iter()
-        .map(|c| c.start + c.duration)
-        .fold(0.0f64, |a, b| a.max(b));
-
-    println!("--- INICIANDO EXPORTAÇÃO ---");
-    println!("Recebendo {} clipes para renderização.", clips.len());
     
-    for (index, clip) in clips.iter().enumerate() {
-        println!(
-            "Clip [{}]: Nome: {}, Início: {}s, Duração: {}s, duration: {}, beginmoment: {}",
-            index, clip.name, clip.start, clip.duration, clip.duration, clip.beginmoment
-        );
-    }
-    println!("----------------------------");
+    // 1. Criar o objeto de configuração
+    let config_data = serde_json::json!({
+        "project_path": project_path,
+        "export_path": export_path,
+        "clips": clips
+    });
 
-    // filter string
-    let filter_complex = build_rendering_filter(&clips, total_duration);
-
-    let mut args = Vec::new();
-    for clip in &clips {
-        let path_lower = clip.path.to_lowercase();
-        
-        if path_lower.ends_with(".png") || path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg") {
-            //args.push("-loop".to_string());
-            //args.push("1".to_string());
-            //args.push("-t".to_string());
-            //args.push((total_duration + 1.0).to_string());
-        }
-        
-
-
-        let is_image = path_lower.ends_with(".png") || path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg");
-
-        if is_image {
-            // ESSENCIAL: O loop deve vir ANTES do -i
-            args.push("-loop".to_string());
-            args.push("1".to_string());
-            
-            // Opcional mas recomendado: limite a leitura para não ler infinitamente
-            args.push("-t".to_string());
-            args.push(format!("{:.4}", clip.duration));
-        }
-
-
-        args.push("-i".to_string());
-        args.push(clip.path.clone());
-        
-        
+    // 2. Definir o caminho do JSON dentro da pasta do projeto
+    let project_dir = std::path::PathBuf::from(&project_path);
+    
+    // Garante que a pasta do projeto existe
+    if !project_dir.exists() {
+        return Err(format!("A pasta do projeto não existe: {}", project_path));
     }
 
+    let config_path = project_dir.join("export_config.json");
 
+    // 3. Salvar/Sobrescrever o JSON
+    let json_string = serde_json::to_string_pretty(&config_data)
+        .map_err(|e| format!("Erro ao serializar JSON: {}", e))?;
+    
+    std::fs::write(&config_path, json_string)
+        .map_err(|e| format!("Erro ao gravar export_config.json no projeto: {}", e))?;
 
+    let config_path_str = config_path.to_string_lossy().to_string();
 
-    args.extend([
-        "-filter_complex".to_string(), filter_complex,
-        "-map".to_string(), "[outv]".to_string(),
-        "-map".to_string(), "[outa]".to_string(),
-        "-c:v".to_string(), "libx264".to_string(),
-        "-preset".to_string(), "ultrafast".to_string(),
-        "-c:a".to_string(), "aac".to_string(),
-        "-b:a".to_string(), "192k".to_string(),
-        "-pix_fmt".to_string(), "yuv420p".to_string(),
-        "-t".to_string(), total_duration.to_string(), 
-        "-y".to_string(), export_path
-    ]);
-
-    // Debug para o console
-    //println!("--- Comando FFmpeg Executado ---");
-    println!("ffmpeg {}", args.join(" "));
-
-    // 5. Executar o Sidecar do Tauri
+    // 4. Iniciar o Sidecar Python
     let (mut rx, child) = app_handle
         .shell()
-        .sidecar("ffmpeg")
-        .map_err(|e| format!("FFmpeg sidecar não encontrado: {}", e))?
-        .args(args)
+        .sidecar("exporter")
+        .map_err(|e| format!("Sidecar não encontrado: {}", e))?
+        .env("PYTHONUNBUFFERED", "1")
+        .arg(&config_path_str) // Passamos o caminho completo do JSON dentro do projeto
         .spawn()
-        .map_err(|e| format!("Falha ao iniciar FFmpeg: {}", e))?;
+        .map_err(|e| format!("Falha ao iniciar processo Python: {}", e))?;
 
+    // Guardar processo para cancelamento
     {
         let mut lock = state.0.lock().unwrap();
         *lock = Some(child);
     }
 
-    
-    while let Some(event) = rx.recv().await {
-        match event {
-            tauri_plugin_shell::process::CommandEvent::Stderr(line_bytes) => {
-                let line = String::from_utf8_lossy(&line_bytes);
-                // [English Comment] FFmpeg output: "time=00:00:10.50"
-                if line.contains("time=") {
-                    if let Some(time_part) = line.split("time=").last().and_then(|s| s.split_whitespace().next()) {
-                        let hms: Vec<&str> = time_part.split(':').collect();
-                        if hms.len() == 3 {
-                            let hours: f64 = hms[0].parse().unwrap_or(0.0);
-                            let mins: f64 = hms[1].parse().unwrap_or(0.0);
-                            let secs: f64 = hms[2].parse().unwrap_or(0.0);
-                            let current_seconds = hours * 3600.0 + mins * 60.0 + secs;
-                            
-                            let percentage = ((current_seconds / total_duration) * 100.0).min(100.0) as u32;
-                            // [English Comment] Emit progress to Frontend
-                            let _ = app_handle.emit("export-progress", percentage);
+    // 5. Monitorização do progresso (Stderr)
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                tauri_plugin_shell::process::CommandEvent::Stderr(line_bytes) => {
+                    let raw = String::from_utf8_lossy(&line_bytes);
+                    for line in raw.lines() {
+                        let line = line.trim();
+                        
+                        if line.contains("PERCENT:") {
+                            if let Some(val_str) = line.split("PERCENT:").last() {
+                                if let Ok(percent) = val_str.parse::<u32>() {
+                                    // Log para você acompanhar no terminal
+                                    println!("Progresso Real: {}%", percent);
+                                    let _ = app_handle.emit("export-progress", percent);
+                                }
+                            }
                         }
+                        // println!("[Python Log]: {}", line); // Opcional
                     }
                 }
-            }
-            tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
-                let mut lock = state.0.lock().unwrap();
-                *lock = None;
-                if payload.code == Some(0) { 
-                    let _ = app_handle.emit("export-progress", 100);
-                    return Ok(()); 
+                tauri_plugin_shell::process::CommandEvent::Terminated(status) => {
+                    println!("Renderização concluída com código: {:?}", status.code);
+                    // Opcional: manter o json no projeto para histórico ou apagar
+                    // let _ = std::fs::remove_file(config_path);
+                    break;
                 }
-                else { return Err(format!("FFmpeg error: {:?}", payload.code)); }
+                _ => {}
             }
-            _ => {}
         }
-    }
-    Ok(())
+    });
 
-    //Err("O processo de exportação terminou inesperadamente".into())
+    Ok(())
 }
 
 
@@ -255,51 +219,95 @@ pub fn build_rendering_filter(clips: &[Clip], total_duration: f64) -> String {
         // --- Processamento de Vídeo/Imagem ---
         if !is_audio {
             let mut v_filters = Vec::new();
+
+        //check if has keyframes, if result 1 there is no keyframes
+
+        let opacity_kfs = clip.keyframes.as_ref()
+                .and_then(|k| k.opacity.as_ref())
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+
+        let opacity_expression = build_opacity_expression(opacity_kfs);
+
+        if opacity_expression == "1" 
+        {
             
             if is_image {
 
-                   // 1. Força o canal alpha para que o fade funcione
-    v_filters.push("format=yuva420p".to_string());
+                                
+                    v_filters.push("format=yuva420p".to_string());
 
-    if let Some(fi) = clip.fadein {
-        if fi > 0.0 { 
-            v_filters.push(format!("fade=t=in:st=0:d={:.4}:alpha=1", fi)); 
-        }
-    }
-    if let Some(fo) = clip.fadeout {
-        if fo > 0.0 {
-            let st = clip.duration - fo;
-            v_filters.push(format!("fade=t=out:st={:.4}:d={:.4}:alpha=1", st, fo));
-        }
-    }
-
-    let v_effects = if v_filters.is_empty() { "".to_string() } else { format!(",{}", v_filters.join(",")) };
-
-    // Note o setpts: para imagens em loop, resetar o PTS para 0 é crucial
-    filters.push(format!(
-        "[{}:v]{}{},setpts=PTS-STARTPTS+{}/TB[v{}]",
-        i, centering_filter, v_effects, clip.start, i
-    ));
-            } else {
-                // Fade In/Out de Vídeo (Opcional se não usar keyframes de opacidade ainda)
-                if let Some(fi) = clip.fadein {
-                    if fi > 0.0 { v_filters.push(format!("fade=t=in:st=0:d={:.4}", fi)); }
-                }
-                if let Some(fo) = clip.fadeout {
-                    if fo > 0.0 {
-                        let st = clip.duration - fo;
-                        v_filters.push(format!("fade=t=out:st={:.4}:d={:.4}", st, fo));
+                    if let Some(fi) = clip.fadein {
+                        if fi > 0.0 { 
+                            v_filters.push(format!("fade=t=in:st=0:d={:.4}:alpha=1", fi)); 
+                        }
                     }
-                }
+                    if let Some(fo) = clip.fadeout {
+                        if fo > 0.0 {
+                            let st = clip.duration - fo;
+                            v_filters.push(format!("fade=t=out:st={:.4}:d={:.4}:alpha=1", st, fo));
+                        }
+                    }
 
-                let v_effects = if v_filters.is_empty() { "".to_string() } else { format!(",{}", v_filters.join(",")) };
+                    let v_effects = if v_filters.is_empty() { "".to_string() } else { format!(",{}", v_filters.join(",")) };
 
+                    
+                    filters.push(format!(
+                        "[{}:v]{}{},setpts=PTS-STARTPTS+{}/TB[v{}]",
+                        i, centering_filter, v_effects, clip.start, i
+                    ));
+                            
+            } else 
+            {
+                        if let Some(fi) = clip.fadein {
+                            if fi > 0.0 { v_filters.push(format!("fade=t=in:st=0:d={:.4}", fi)); }
+                        }
+                        if let Some(fo) = clip.fadeout {
+                            if fo > 0.0 {
+                                let st = clip.duration - fo;
+                                v_filters.push(format!("fade=t=out:st={:.4}:d={:.4}", st, fo));
+                            }
+                        }
+
+                        let v_effects = if v_filters.is_empty() { "".to_string() } else { format!(",{}", v_filters.join(",")) };
+
+                        filters.push(format!(
+                            "[{}:v]trim=start={:.4}:duration={:.4},setpts=PTS-STARTPTS,{}{},setpts=PTS+{}/TB[v{}]",
+                            i, clip.beginmoment, clip.duration, centering_filter, v_effects, clip.start, i
+                        ));
+            }
+                
+        }
+        else {
+            // --- Logic for Keyframe Opacity ---
+            
+            // 1. Ensure alpha channel support for the pixel format
+            v_filters.push("format=yuva420p".to_string());
+            
+            // 2. Add the opacity expression. 
+            // We use single quotes for the internal math expression
+            v_filters.push(format!("colorchannelmixer=aa='{}'", opacity_expression));
+
+            let v_effects = format!(",{}", v_filters.join(","));
+
+            if is_image {
+                // For images: reset PTS so 't' in the expression starts at 0 for this clip
+                filters.push(format!(
+                    "[{}:v]{}{},setpts=PTS-STARTPTS+{}/TB[v{}]",
+                    i, centering_filter, v_effects, clip.start, i
+                ));
+            } else {
+                // For videos: trim first, then apply effects and timeline positioning
                 filters.push(format!(
                     "[{}:v]trim=start={:.4}:duration={:.4},setpts=PTS-STARTPTS,{}{},setpts=PTS+{}/TB[v{}]",
                     i, clip.beginmoment, clip.duration, centering_filter, v_effects, clip.start, i
                 ));
             }
-            video_layers.push((i, clip.start, clip.duration));
+        }
+
+
+
+          video_layers.push((i, clip.start, clip.duration));
         }
 
         // --- Processamento de Áudio com Keyframes ---
@@ -464,7 +472,7 @@ fn build_volume_expression(keyframes: &[Keyframe], mute: bool) -> String {
 //if(lt(t,2.4556),pow(10,(45.6522)/20),if(between(t,2.4556,3.3333),pow(10,((45.6522)+((-32.6087)-(45.6522))*(t-(2.4556))/((3.3333)-(2.4556)))/20),if(between(t,3.3333,4.2778),pow(10,((-32.6087)+((0.0000)-(-32.6087))*(t-(3.3333))/((4.2778)-(3.3333)))/20),pow(10,(0.0000)/20))))
 //
 
-pub fn generate_ffmpeg_expression(keyframes: &[Keyframe]) -> String {
+pub fn build_opacity_expression(keyframes: &[Keyframe]) -> String {
     if keyframes.is_empty() { return "1".to_string(); }
 
     // Criamos uma cópia local para ordenar sem "roubar" o Vec do usuário

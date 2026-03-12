@@ -1,0 +1,11 @@
+{
+  "export_path": "/home/gabriel/Music/projeto_final.mp4",
+  "clips": [
+    {
+      "path": "/home/gabriel/Music/input.mp4",
+      "start": 0,
+      "duration": 5.0,
+      "beginmoment": 10.0
+    }
+  ]
+}
