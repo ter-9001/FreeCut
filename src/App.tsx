@@ -58,7 +58,8 @@ import {
   EyeOff,
   BrushCleaning,
   DiamondPlus,
-  ChevronDown
+  ChevronDown,
+  Crosshair
   
 } from 'lucide-react';
 
@@ -133,11 +134,12 @@ interface Clip {
   speed?: Keyframe[];
   rotation3d?: Keyframe[];
   position?: Keyframe[];
+  zoom?:Keyframe[];
 };
   
 
 
-activeKeyframeView?: 'volume' | 'opacity' | 'speed' | 'rotation3d' | null;
+activeKeyframeView?: 'volume' | 'opacity' | 'speed' | 'rotation3d'| 'position' | null;
 
 
 }
@@ -209,7 +211,61 @@ export default function App() {
 
   
   const playheadRef = useRef<HTMLDivElement>(null);
-  //const mainPlayer = useRef<HTMLVideoElement>(null);
+
+
+  // const to move position grafically
+  const [showContextMenu, setShowContextMenu] = useState<{ x: number, y: number } | null>(null);
+  const [interactionMode, setInteractionMode] = useState<'none' | 'transform' | 'crop'>('none');
+
+  // Refs para lógica de motor (Não disparam re-render, mantêm a fluidez)
+  const selectedClipIdRef = useRef<string | null>(null);
+  const isDraggingRef = useRef(false);
+  const lastMousePosRef = useRef({ x: 0, y: 0 });
+  const canvasCursor = interactionMode === 'transform' ? 'move' : 'pointer';
+
+// Fechar menu ao clicar fora
+useEffect(() => {
+  const closeMenu = () => setShowContextMenu(null);
+  window.addEventListener('click', closeMenu);
+  return () => window.removeEventListener('click', closeMenu);
+}, []);
+
+const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  if(!topClips.current) return
+
+  const rect = canvasRef.current?.getBoundingClientRect();
+  if (!rect) return;
+
+  // Coordenadas do mouse convertidas para a escala do Canvas do projeto
+  const mouseX = (e.clientX - rect.left) * (projectConfig.width / rect.width);
+  const mouseY = (e.clientY - rect.top) * (projectConfig.height / rect.height);
+
+  
+
+  // Percorremos os clipes visíveis (do topo para baixo)
+  for (const clip of topClips.current) {
+    const pos = getInterpolatedValueWithFades(currentTime, clip, 'position') as Position;
+    
+    // Precisamos saber a largura/altura do asset (img) que o drawFrame usou
+    // Aqui você pode precisar guardar essas dimensões no objeto Clip ou via Ref
+    const clipWidth = clip.width || 1920; 
+    const clipHeight = clip.height || 1080;
+
+    if (
+      mouseX >= pos.x && mouseX <= pos.x + clipWidth &&
+      mouseY >= pos.y && mouseY <= pos.y + clipHeight
+    ) {
+      selectedClipIdRef.current = clip.id;
+      // Aqui você dispara a abertura do Context Menu
+      setShowContextMenu({ x: e.clientX, y: e.clientY });
+      return;
+    }
+
+
+    
+  }
+  selectedClipIdRef.current = null; // Clicou no vazio
+};
 
 
   //part to Project Config
@@ -386,7 +442,8 @@ const [isPlaying, setIsPlaying] = useState(false);
 const requestRef = useRef <number>(); // for loop animation loop of high precision
 const lastTimeRef = useRef<number | null>(null);
 
-const [topClips, setTopClips] = useState<Clip [] | null>(null);
+//const [topClips, setTopClips] = useState<Clip [] | null>(null);
+const topClips = useRef<Clip[] | null >([]);
 const [topAudios, setTopAudios] = useState<Clip [] | null>(null);
 
 
@@ -642,7 +699,7 @@ const startExport = async () => {
 
 
 //function to point the track that must be showed in video preview
-const updatePreview = (currentTime: number) => {
+const updatePreview = async (currentTime: number) => {
   // 1. Filter by time of playhead
 
  
@@ -655,7 +712,7 @@ const updatePreview = (currentTime: number) => {
 
   if (currentClips.length == 0)
   {
-    setTopClips(null)
+    topClips.current = null
     return
   }  
       
@@ -676,7 +733,9 @@ const updatePreview = (currentTime: number) => {
 
   // 3. Set the winner
   //const winner = sortedClips[0] || null;
-  setTopClips(sortedClips);
+  topClips.current = sortedClips;
+
+  console.log('winners: ',sortedClips)
 
   
 
@@ -731,7 +790,7 @@ const updateAudio = () => {
   );
 
 
-  console.log('cc clips',currentClips)
+  //console.log('cc clips',currentClips)
 
   if (currentClips.length == 0)
   {
@@ -1037,13 +1096,161 @@ const getInterpolatedValue = (time: number, keyframes: Keyframe[]): number => {
   return 0.5;
 };
 
+
 const getInterpolatedValueWithFades = (
+  timeFull: number, 
+  clip: any, 
+  type: 'opacity' | 'volume' | 'speed' | 'zoom' | 'position'
+): any => {
+  // 1. Valores Padrão (Fallbacks)
+  const getDefaultValue = () => {
+    if (type === 'volume') return convertDB(0.5);
+    if (type === 'position') return { x: 0, y: 0 } as Position;
+    return 1.0; 
+  };
+
+  const time = timeFull - clip.start;
+  const kfArray = clip.keyframes?.[type];
+  let baseValue = getDefaultValue();
+
+  if (kfArray && kfArray.length > 0) {
+    const sorted = [...kfArray].sort((a, b) => a.time - b.time);
+
+    if (time <= sorted[0].time) {
+      baseValue = sorted[0].value;
+    } else if (time >= sorted[sorted.length - 1].time) {
+      baseValue = sorted[sorted.length - 1].value;
+    } else {
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const startKf = sorted[i];
+        const endKf = sorted[i + 1];
+        if (time >= startKf.time && time <= endKf.time) {
+          const rangeTime = endKf.time - startKf.time;
+          const progress = rangeTime === 0 ? 0 : (time - startKf.time) / rangeTime;
+
+          // LÓGICA PARA POSITION (Objeto)
+          if (type === 'position') {
+            const startPos = startKf.value as Position;
+            const endPos = endKf.value as Position;
+            baseValue = {
+              x: startPos.x + progress * (endPos.x - startPos.x),
+              y: startPos.y + progress * (endPos.y - startPos.y)
+            };
+          } else {
+            // LÓGICA PARA NÚMEROS (Opacity, Speed, etc)
+            baseValue = (startKf.value as number) + progress * ((endKf.value as number) - (startKf.value as number));
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // 3. Aplicação de Fades (Somente para Opacity e Volume)
+  if (type === 'opacity' || type === 'volume') {
+    const isVideo = type === 'opacity';
+    const fadeInDuration = isVideo ? (clip.fadein || 0) : (clip.fadeinAudio || 0);
+    const fadeOutDuration = isVideo ? (clip.fadeout || 0) : (clip.fadeoutAudio || 0);
+    
+    let fadeModifier = 1.0;
+    if (time < fadeInDuration && fadeInDuration > 0) {
+      fadeModifier = time / fadeInDuration;
+    } else if (time > (clip.duration - fadeOutDuration) && fadeOutDuration > 0) {
+      const timeInFadeOut = time - (clip.duration - fadeOutDuration);
+      fadeModifier = 1.0 - (timeInFadeOut / fadeOutDuration);
+    }
+
+    fadeModifier = Math.max(0, Math.min(1, fadeModifier));
+    return (baseValue as number) * fadeModifier;
+  }
+
+  return baseValue;
+};
+
+
+const getInterpolatedValueWithFades_old2 = (
+  timeFull: number, 
+  clip: any, 
+  type: 'opacity' | 'volume' | 'speed' | 'zoom'
+): number => {
+  // 1. Definição de Valores Padrão (Fallbacks)
+  const getDafaultValue = () => {
+    if (type === 'volume') return convertDB(0.5); // Seu padrão para áudio
+    return 1.0; // Padrão para opacity, speed e zoom
+  };
+
+  const time = timeFull - clip.start; // Tempo local dentro do clipe
+  const kfArray = clip.keyframes?.[type]; // Pega o array correto baseado no type pedido
+  
+  // 2. Cálculo do Valor Base (Interpolação)
+  let baseValue = getDafaultValue();
+
+  if (kfArray && kfArray.length > 0) {
+    const sorted = [...kfArray].sort((a, b) => a.time - b.time);
+
+    // Tempo antes do primeiro keyframe
+    if (time <= sorted[0].time) {
+      baseValue = sorted[0].value;
+    } 
+    // Tempo depois do último keyframe
+    else if (time >= sorted[sorted.length - 1].time) {
+      baseValue = sorted[sorted.length - 1].value;
+    } 
+    // Interpolação entre dois pontos
+    else {
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const startKf = sorted[i];
+        const endKf = sorted[i + 1];
+        if (time >= startKf.time && time <= endKf.time) {
+          const rangeTime = endKf.time - startKf.time;
+          if (rangeTime === 0) {
+             baseValue = startKf.value;
+          } else {
+             const progress = (time - startKf.time) / rangeTime;
+             baseValue = startKf.value + progress * (endKf.value - startKf.value);
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // 3. Aplicação de Fades (Apenas para Opacity e Volume)
+  // Nota: Geralmente não aplicamos fade em Speed ou Zoom, pois causaria comportamentos estranhos
+  if (type === 'opacity' || type === 'volume') {
+    const isVideo = type === 'opacity';
+    const fadeInDuration = isVideo ? (clip.fadein || 0) : (clip.fadeinAudio || 0);
+    const fadeOutDuration = isVideo ? (clip.fadeout || 0) : (clip.fadeoutAudio || 0);
+    
+    let fadeModifier = 1.0;
+
+    // Fade In
+    if (time < fadeInDuration && fadeInDuration > 0) {
+      fadeModifier = time / fadeInDuration;
+    } 
+    // Fade Out
+    else if (time > (clip.duration - fadeOutDuration) && fadeOutDuration > 0) {
+      const timeInFadeOut = time - (clip.duration - fadeOutDuration);
+      fadeModifier = 1.0 - (timeInFadeOut / fadeOutDuration);
+    }
+
+    fadeModifier = Math.max(0, Math.min(1, fadeModifier));
+    return baseValue * fadeModifier;
+  }
+
+  // Para Speed e Zoom, retornamos apenas o valor interpolado sem fades
+  return baseValue;
+};
+
+
+
+const getInterpolatedValueWithFades_old = (
   timeFull: number, 
   clip: any, 
   type: 'opacity' | 'volume' | 'speed' | 'zoom'
 ): number => {
   // 1. Identificar quais campos de fade usar baseado no tipo
-  const isVideo = type === 'opacity';
+  const isVideo = knowTypeByAssetName(clip.name, true);
   const kfArray = isVideo ? clip.keyframes?.opacity : clip.keyframes?.volume;
 
   const time = timeFull - clip.start; // Tempo decorrido dentro do clipe (segundos)
@@ -1144,9 +1351,167 @@ const getOpacityAtTime = (clip: Clip) => {
 
 
 //Render main frame
-// Função auxiliar para carregar imagem de forma síncrona/esperável
-// Função auxiliar para carregar imagem de forma síncrona/esperável
+
+
+
 const drawFrame = async (time: number) => {
+    if (!canvasRef.current) return;
+    
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return;
+
+    // --- FASE 0: SETUP DO CANVAS ---
+    // Ajusta as dimensões do canvas de acordo com o projeto (1920x1080, etc)
+    if (canvasRef.current.width !== projectConfig.width || canvasRef.current.height !== projectConfig.height) {
+        canvasRef.current.width = projectConfig.width;
+        canvasRef.current.height = projectConfig.height;
+    }
+
+
+    // Se não houver clipes, limpa e sai
+    if (!topClips.current || topClips.current.length === 0) {
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        return;
+    }
+
+    
+
+    const now = performance.now();
+    if ( isPlaying && (now - lastFrameTimeRef.current < (1000 / projectConfig.fps))) return
+    
+    console.log('tC',topClips.current)
+    
+    
+    lastFrameTimeRef.current = now;
+    
+
+
+
+    const blendModeMap: Record<string, GlobalCompositeOperation> = {
+        'normal': 'source-over',
+        'screen': 'screen',
+        'multiply': 'multiply',
+        'overlay': 'overlay',
+        'lineardodge': 'lighter',
+    };
+
+    // Função auxiliar para interpolar posição (X e Y)
+    const getInterpolatedPosition = (timelineTime: number, clip: Clip): { x: number, y: number } | null => {
+        const kfs = clip.keyframes?.position;
+        if (!kfs || kfs.length === 0) return null;
+
+        const sortedKfs = [...kfs].sort((a, b) => a.time - b.time);
+        
+        if (timelineTime <= sortedKfs[0].time) return sortedKfs[0].value as Position;
+        if (timelineTime >= sortedKfs[sortedKfs.length - 1].time) return sortedKfs[sortedKfs.length - 1].value as Position;
+
+        for (let i = 0; i < sortedKfs.length - 1; i++) {
+            const start = sortedKfs[i];
+            const end = sortedKfs[i + 1];
+
+            if (timelineTime >= start.time && timelineTime <= end.time) {
+                const t = (timelineTime - start.time) / (end.time - start.time);
+                const startPos = start.value as Position;
+                const endPos = end.value as Position;
+                
+                return {
+                    x: startPos.x + t * (endPos.x - startPos.x),
+                    y: startPos.y + t * (endPos.y - startPos.y)
+                };
+            }
+        }
+        return null;
+    };
+
+    try {
+        // --- FASE 1: BUSCA DE FRAMES ---
+        const framePromises = topClips.current.map(async (clip) => {
+            const timelineRelativeTime = time - clip.start;
+            let assetRelativeTime = timelineRelativeTime;
+
+            // Lógica de Speed Ramp
+            if (clip.keyframes?.speed && clip.keyframes.speed.length > 0) {
+                const speedKfs = [...clip.keyframes.speed].sort((a, b) => a.time - b.time);
+                let acc = 0; let lt = 0; let ls = (speedKfs[0].value as number);
+                for (const kf of speedKfs) {
+                    const kfVal = kf.value as number;
+                    if (timelineRelativeTime > kf.time) {
+                        acc += (kf.time - lt) * (ls + kfVal) / 2;
+                        lt = kf.time; ls = kfVal;
+                    } else {
+                        const dt = timelineRelativeTime - lt;
+                        const t = dt / (kf.time - lt || 1);
+                        const cs = ls + t * (kfVal - ls);
+                        acc += dt * (ls + cs) / 2;
+                        lt = timelineRelativeTime; break;
+                    }
+                }
+                if (timelineRelativeTime > lt) acc += (timelineRelativeTime - lt) * ls;
+                assetRelativeTime = acc;
+            }
+
+            const clipTimeMs = (assetRelativeTime + (clip.beginmoment || 0)) * 1000;
+            const path = `${currentProjectPath}/videos/${clip.name}`;
+
+            try {
+                const frameBase64: string = await invoke('get_video_frame', { path, timeMs: clipTimeMs });
+                return new Promise<HTMLImageElement | null>((resolve) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = () => resolve(null);
+                    img.src = frameBase64;
+                });
+            } catch (e) { return null; }
+        });
+
+        const loadedImages = await Promise.all(framePromises);
+
+        // --- FASE 2: DESENHO ---
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+        // Desenha do fundo (fim do array) para o topo (index 0)
+        for (let i = loadedImages.length - 1; i >= 0; i--) {
+            const img = loadedImages[i];
+            const clip = topClips.current[i];
+            if (!img) continue;
+
+            const timelineRelativeTime = time - clip.start;
+            const opacity = getInterpolatedValueWithFades(timelineRelativeTime, clip, 'opacity');
+            
+            // Pega posição interpolada ou centraliza
+            const pos = getInterpolatedPosition(timelineRelativeTime, clip);
+            
+            let drawX, drawY;
+
+            if (pos) {
+                drawX = pos.x;
+                drawY = pos.y;
+            } else {
+                // Centralização automática (Baseado no tamanho do clipe vs tamanho do Canvas)
+                drawX = (canvasRef.current.width - img.width) / 2;
+                drawY = (canvasRef.current.height - img.height) / 2;
+            }
+
+            ctx.save();
+            ctx.globalCompositeOperation = blendModeMap[clip.blendmode || 'normal'] || 'source-over';
+            ctx.globalAlpha = opacity;
+
+            // Desenha o frame na posição calculada
+            ctx.drawImage(img, drawX, drawY);
+            
+            ctx.restore();
+        }
+
+    } catch (err) {
+        console.error("Erro no preview:", err);
+    }
+};
+
+
+
+const drawFrame_old = async (time: number) => {
     if (!canvasRef.current || !topClips || topClips.length === 0) {
         const ctx = canvasRef.current?.getContext('2d');
         if (ctx && canvasRef.current) {
@@ -1173,7 +1538,7 @@ const drawFrame = async (time: number) => {
 
     try {
         // --- FASE 1: BUSCA EM PARALELO ---
-        const framePromises = topClips.map(async (clip) => {
+        const framePromises = topClips.current?.map(async (clip) => {
             const timelineRelativeTime = time - clip.start;
             let assetRelativeTime = timelineRelativeTime;
 
@@ -1231,7 +1596,7 @@ const drawFrame = async (time: number) => {
         // REVERSO: Começamos do último clipe (fundo) até o index 0 (topo)
         for (let i = loadedImages.length - 1; i >= 0; i--) {
             const img = loadedImages[i];
-            const clip = topClips[i];
+            const clip = topClips.current[i];
             if (!img) continue;
 
             const timelineRelativeTime = time - clip.start;
@@ -1254,129 +1619,30 @@ const drawFrame = async (time: number) => {
     }
 };
 
-const drawFrame_Old = async (time: number) => {
-    if (!canvasRef.current) return;
-
-    const now = performance.now();
-    if (now - lastFrameTimeRef.current < FPS_LIMIT) return;
-    lastFrameTimeRef.current = now;
-      
-    const ctx = canvasRef.current.getContext('2d');
-
-    if (!topClips) {
-        if (ctx && canvasRef.current) {
-            ctx.fillStyle = "black";
-            ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-        }
-        return;
-    }
-
-    const topClip = topClips[0]
-
-    // 1. TEMPO RELATIVO NA TIMELINE
-    const timelineRelativeTime = time - topClip.start;
-
-    // 2. CÁLCULO DO ASSET TIME (A "MÁGICA" DO SPEED RAMP)
-    // Precisamos saber em qual segundo do VÍDEO ORIGINAL estamos.
-    let assetRelativeTime = timelineRelativeTime;
-
-    if (topClip.keyframes?.speed && topClip.keyframes.speed.length > 0) {
-        const speedKfs = [...topClip.keyframes.speed].sort((a, b) => a.time - b.time);
-        
-        let accumulatedAssetTime = 0;
-        let lastTimelineTime = 0;
-        let lastSpeed = speedKfs[0].value;
-
-        // Calculamos a integral da velocidade até o timelineRelativeTime atual
-        for (let i = 0; i < speedKfs.length; i++) {
-            const kf = speedKfs[i];
-            
-            if (timelineRelativeTime > kf.time) {
-                // Trecho completo entre o último ponto e este
-                const segmentDuration = kf.time - lastTimelineTime;
-                const avgSpeed = (lastSpeed + kf.value) / 2;
-                accumulatedAssetTime += segmentDuration * avgSpeed;
-                
-                lastTimelineTime = kf.time;
-                lastSpeed = kf.value;
-            } else {
-                // Trecho parcial entre o último ponto e o tempo atual do player
-                const segmentDuration = timelineRelativeTime - lastTimelineTime;
-                
-                // Interpolação linear da velocidade no ponto exato do player
-                const t = segmentDuration / (kf.time - lastTimelineTime || 1);
-                const currentSpeed = lastSpeed + t * (kf.value - lastSpeed);
-                const avgSpeed = (lastSpeed + currentSpeed) / 2;
-                
-                accumulatedAssetTime += segmentDuration * avgSpeed;
-                lastTimelineTime = timelineRelativeTime;
-                break;
-            }
-        }
-
-        // Caso o player esteja depois do último keyframe de velocidade
-        if (timelineRelativeTime > lastTimelineTime) {
-            accumulatedAssetTime += (timelineRelativeTime - lastTimelineTime) * lastSpeed;
-        }
-
-        assetRelativeTime = accumulatedAssetTime;
-    }
-
-    // 3. CÁLCULO DA OPACIDADE
-    // Importante: Passamos o timelineRelativeTime pois os keyframes de 
-    // opacidade já foram sincronizados para a posição da timeline.
-    const opacity = getInterpolatedValueWithFades(timelineRelativeTime, topClip, 'opacity');
-
-    // 4. TEMPO PARA O RUST (milissegundos)
-    // Usamos o assetRelativeTime que reflete a distorção da velocidade
-    const clipTimeMs = (assetRelativeTime + (topClip.beginmoment || 0)) * 1000;
-    const path = `${currentProjectPath}/videos/${topClip.name}`;
-
-    try {
-        const frameBase64: string = await invoke('get_video_frame', { 
-            path, 
-            timeMs: clipTimeMs 
-        });
-
-        const img = new Image();
-        img.onload = () => {
-            if (canvasRef.current && ctx) {
-                canvasRef.current.width = img.width;
-                canvasRef.current.height = img.height;
-
-                ctx.fillStyle = "black";
-                ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-
-                ctx.globalAlpha = opacity;
-                ctx.drawImage(img, 0, 0);
-                ctx.globalAlpha = 1.0;
-            }
-        };
-        img.src = frameBase64;
-         
-    } catch (err) {
-        console.error("Erro ao buscar frame:", err);
-    }
-};
-
+const lastDrawTimeRef = useRef<number>(0);
+const FPS_target = 10;
+const frameInterval = 1000 / FPS_target; // 100ms
 
 useEffect(() => {
-  if (isPlaying) {
+  
     updatePreview(currentTime);
-    updateAudio()
-    drawFrame(currentTime)
+    updateAudio();
 
-    
-
-  }
-}, [isPlaying, currentTime, clips]);
-
-
-
+    const now = performance.now();
+    if (now - lastDrawTimeRef.current >= frameInterval) {
+      drawFrame(currentTime);
+      lastDrawTimeRef.current = now; 
+    }
+  
 
 
 
-const lastUpdateRef = useRef<number>(0); // Acumulador para o controle de 10fps
+
+}, [currentTime, clips]);
+
+
+
+const lastUpdateRef = useRef<number>(0); 
 
 const currentTimeRef = useRef(0);
 
@@ -3924,6 +4190,8 @@ const PropertiesAside = () => {
   const volumeKeyframesTime = selectedClip.keyframes?.volume?.map(kf => kf.time) || null;
   const opacityKeyframesTime = selectedClip.keyframes?.opacity?.map(kf => kf.time) || null;
   const speedKeyframesTime = selectedClip.keyframes?.speed?.map(kf => kf.time) || null;
+  const zoomKeyframesTime = selectedClip.keyframes?.zoom?.map(kf => kf.time) || null;
+
 
 
 
@@ -3938,6 +4206,14 @@ const PropertiesAside = () => {
   const speedKeyframeNow  = speedKeyframesTime?.some(kfTime => 
        Math.abs(kfTime - (currentTimeRef.current - selectedClip.start)) <= 0.05
   )|| false;
+
+
+  const zoomKeyframeNow  = zoomKeyframesTime?.some(kfTime => 
+       Math.abs(kfTime - (currentTimeRef.current - selectedClip.start)) <= 0.05
+  )|| false;
+
+const currentPos = getInterpolatedValueWithFades(currentTime, selectedClip, 'position') as Position;
+
 
 
 
@@ -3972,27 +4248,59 @@ const PropertiesAside = () => {
 
           {(isVideo || isText) && (
             <>
-              <div className="grid grid-cols-2 gap-2">
-                <PropertyRow label="Position X" activeColor={activeHex}>
-                  <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none focus:border-white/20" />
-                </PropertyRow>
-                <PropertyRow label="Position Y" activeColor={activeHex}>
-                  <input type="number" className="bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none focus:border-white/20" />
-                </PropertyRow>
-              </div>
+
+            {/*POSITION */}
+
+              {/* Captura os valores atuais via interpolação para exibir no input */}
+
+            <div className="grid grid-cols-2 gap-2">
+              <PropertyRow label="Position X" activeColor={activeHex}>
+                <input 
+                  type="number" 
+                  min="-4000"
+                  max="4000"
+                  defaultValue={Math.round(currentPos.x)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      updateKeyframes(selectedClip, 'position', { x: parseFloat(e.currentTarget.value) });
+                    }
+                  }}
+                  onBlur={(e) => updateKeyframes(selectedClip, 'position', { x: parseFloat(e.currentTarget.value) })}
+                  className="w-full bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none focus:border-white/20 transition-all" 
+                />
+              </PropertyRow>
+
+              <PropertyRow label="Position Y" activeColor={activeHex}>
+                <input 
+                  type="number" 
+                  min="-4000"
+                  max="4000"
+                  defaultValue={Math.round(currentPos.y)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      updateKeyframes(selectedClip, 'position', { y: parseFloat(e.currentTarget.value) });
+                    }
+                  }}
+                  onBlur={(e) => updateKeyframes(selectedClip, 'position', { y: parseFloat(e.currentTarget.value) })}
+                  
+                  className="w-full bg-white/5 border border-white/5 rounded px-2 py-1 text-[10px] text-white outline-none focus:border-white/20 transition-all" 
+                />
+              </PropertyRow>
+            </div>
              
+             {/*ZOOM */}
              
              <PropertyRow 
               label={
                 <div className="flex justify-between items-center w-full pr-2">
                   <span> Zoom </span>
                   <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/5 border border-white/10 ml-10" style={{ color: activeHex }}>
-                    {(getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'zoom') * 100).toFixed(0)}%
+                     {(getInterpolatedValueWithFades(currentTimeRef.current, selectedClip, 'zoom') * 100).toFixed(0)}%
                   </span>
                 </div>
               } 
               activeColor={activeHex} 
-              keyframeNow={volumeKeyframeNow}
+              keyframeNow={zoomKeyframeNow}
             >
                 <input 
                   type="range" 
@@ -4131,9 +4439,10 @@ const PropertiesAside = () => {
               value={selectedClip.fadein ? 
                 selectedClip.fadein : 0
                }
-               onChange={(e) => {
+               onInput={(e) => {
                 e.stopPropagation()
                   const val = parseFloat(e.target.value) || 0;
+                  if (val > selectedClip.duration) return
                   setClips(prev => prev.map((c) => 
                     c.id === selectedClip.id ? { ...c, fadein: val } : c
                   ));
@@ -4145,9 +4454,11 @@ const PropertiesAside = () => {
               value={selectedClip.fadeout ? 
                 selectedClip.fadeout : 0
                }
-               onChange={(e) => {
+               onInput={(e) => {
                 e.stopPropagation()
                   const val = parseFloat(e.target.value) || 0;
+                  if (val > selectedClip.duration) return
+
                   setClips(prev => prev.map((c) => 
                     c.id === selectedClip.id ? { ...c, fadeout: val } : c
                   ));
@@ -4168,9 +4479,11 @@ const PropertiesAside = () => {
               value={selectedClip.fadeinAudio ? 
                 selectedClip.fadeinAudio : 0
                }
-               onChange={(e) => {
+               onInput={(e) => {
                 e.stopPropagation()
                   const val = parseFloat(e.target.value) || 0;
+                  if (val > selectedClip.duration) return
+
                   setClips(prev => prev.map((c) => 
                     c.id === selectedClip.id ? { ...c, fadeinAudio: val } : c
                   ));
@@ -4182,9 +4495,11 @@ const PropertiesAside = () => {
               value={selectedClip.fadeoutAudio ? 
                 selectedClip.fadeoutAudio : 0
                }
-               onChange={(e) => {
+               onInput={(e) => {
                 e.stopPropagation()
                   const val = parseFloat(e.target.value) || 0;
+                  if (val > selectedClip.duration) return
+
                   setClips(prev => prev.map((c) => 
                     c.id === selectedClip.id ? { ...c, fadeoutAudio: val } : c
                   ));
@@ -4765,63 +5080,135 @@ const handleClipMouseMove = (e: React.MouseEvent, clip: Clip) => {
   });
 };
 
-
-
-
-
-const updateKeyframes = (clip: Clip, type: 'opacity' | 'volume' | 'speed', value: string) => {
-  
-  const newValue = parseFloat(value);
-  const threshold = 0.05 
-  
+const updateKeyframes = (
+  clip: Clip, 
+  type: 'opacity' | 'volume' | 'speed' | 'position' | 'rotation3d' | 'zoom', 
+  newValue: number | { x?: number, y?: number, z?: number }
+) => {
+  const threshold = 0.05;
   const relativeTime = currentTimeRef.current - clip.start;
 
-  // 1. Verificar se já existe um keyframe dentro do threshold
-  const existingIndex = clip.keyframes[type].findIndex(
-    (kf) => Math.abs(kf.time -  relativeTime
-    ) <= threshold
-  );
+  const safeKeyframes = clip.keyframes || {};
+  const currentTypeArray = safeKeyframes[type] || [];
+
+  // Função auxiliar para processar o merge de valores (número ou objeto)
+  const getUpdatedValue = (oldValue: any) => {
+    if (typeof newValue === 'object') {
+      const currentObj = oldValue || { x: 0, y: 0, z: 0 };
+      return { ...currentObj, ...newValue }; // Faz o merge de X, Y ou Z simultaneamente
+    }
+    return newValue;
+  };
 
   let updatedTypeArray;
 
-  if (existingIndex !== -1) {
-    // CASO 1: Encontrou um keyframe próximo -> Atualiza o valor
-    updatedTypeArray = clip.keyframes[type].map((kf, index) =>
-      index === existingIndex ? { ...kf, value: newValue } : kf
+  // CASO 0: Inicialização
+  if (currentTypeArray.length === 0) {
+    updatedTypeArray = [{
+      id: crypto.randomUUID(),
+      time: 0,
+      value: getUpdatedValue(type === 'position' ? { x: 0, y: 0 } : type === 'rotation3d' ? { x: 0, y: 0, z: 0 } : 1)
+    }];
+  }
+  // CASO 1: Ajuste Global
+  else if (currentTypeArray.length === 1 && clip.activeKeyframeView !== type) {
+    updatedTypeArray = [{
+      ...currentTypeArray[0],
+      value: getUpdatedValue(currentTypeArray[0].value)
+    }];
+  } 
+  else {
+    // CASO 2: Lógica de Animação
+    const existingIndex = currentTypeArray.findIndex(
+      (kf) => Math.abs(kf.time - relativeTime) <= threshold
     );
+
+    if (existingIndex !== -1) {
+      updatedTypeArray = currentTypeArray.map((kf, index) =>
+        index === existingIndex ? { ...kf, value: getUpdatedValue(kf.value) } : kf
+      );
+    } else {
+      const newKeyframe = {
+        id: crypto.randomUUID(),
+        time: relativeTime,
+        value: getUpdatedValue(null),
+      };
+      
+      updatedTypeArray = [...currentTypeArray, newKeyframe].sort((a, b) => a.time - b.time);
+    }
+  }
+
+  const updatedKeyframes = { ...safeKeyframes, [type]: updatedTypeArray };
+
+  setClips((prev) =>
+    prev.map((c) => c.id === clip.id ? { ...c, keyframes: updatedKeyframes } : c)
+  );
+
+  if (type === 'speed') handleSpeedKeyframeChange({ ...clip, keyframes: updatedKeyframes });
+};
+
+const updateKeyframes_old = (clip: Clip, type: 'opacity' | 'volume' | 'speed', value: string) => {
+  const newValue = parseFloat(value);
+  const threshold = 0.05;
+  const relativeTime = currentTimeRef.current - clip.start;
+
+  const safeKeyframes = clip.keyframes || {};
+  const currentTypeArray = safeKeyframes[type] || [];
+
+  let updatedTypeArray;
+
+  // If there is exactly 1 keyframe AND the user is not in the active edit view of that type
+  if (currentTypeArray.length === 1 && clip.activeKeyframeView !== type) {
+    updatedTypeArray = [{
+      ...currentTypeArray[0],
+      value: newValue 
+      // Mantemos o time original desse único keyframe (geralmente 0)
+    }];
   } else {
-    // CASO 2: Não encontrou -> Cria um novo keyframe
-    const newKeyframe = {
-      id: crypto.randomUUID(), // Gera um ID único para o novo ponto
-      time:  relativeTime,
-      value: newValue,
-    };
-    
-    // Adiciona e mantém o array ordenado por tempo para não quebrar a interpolação
-    updatedTypeArray = [...clip.keyframes[type], newKeyframe].sort(
-      (a, b) => a.time - b.time
+    // --- LÓGICA PADRÃO DE ANIMAÇÃO (EXISTING OU NEW) ---
+    const existingIndex = currentTypeArray.findIndex(
+      (kf) => Math.abs(kf.time - relativeTime) <= threshold
     );
+
+    if (existingIndex !== -1) {
+      // Caso encontre um próximo ao cursor, atualiza
+      updatedTypeArray = currentTypeArray.map((kf, index) =>
+        index === existingIndex ? { ...kf, value: newValue } : kf
+      );
+    } else {
+      // Caso não encontre e a visão esteja ativa (ou tenha + de 1), cria um novo
+      const newKeyframe = {
+        id: crypto.randomUUID(),
+        time: relativeTime,
+        value: newValue,
+      };
+      
+      updatedTypeArray = [...currentTypeArray, newKeyframe].sort(
+        (a, b) => a.time - b.time
+      );
+    }
   }
 
   const updatedKeyframes = {
-    ...clip.keyframes,
+    ...safeKeyframes,
     [type]: updatedTypeArray,
   };
 
-  // Atualiza o estado global dos clips
   setClips((prev) =>
     prev.map((c) =>
       c.id === clip.id ? { ...c, keyframes: updatedKeyframes } : c
     )
   );
 
-
-  if(type == 'speed')
-    handleSpeedKeyframeChange(clip)
-
-
-
+  if (type === 'speed') {
+    handleSpeedKeyframeChange({ ...clip, keyframes: updatedKeyframes });
+  }
 };
+
+
+
+
+
 
 const addKeyframe = (e: React.MouseEvent, clipId: string) => {
   const clip = clips.find(c => c.id === clipId);
@@ -4940,6 +5327,9 @@ const calculateY = (value: number, height: number, type:string = '') => {
 
   if(type == 'volume')
     return (1- reverterVolume(value)) * height
+
+  if(type == 'position')
+    return 0.5
 
   
   
@@ -5429,6 +5819,48 @@ return (
       </section>
 
 
+      {showContextMenu && (
+                  <div 
+                    className="absolute z-[100] bg-[#050505] border border-zinc-800 rounded-lg shadow-2xl p-1 w-52 overflow-hidden"
+                    style={{ top: showContextMenu.y, left: showContextMenu.x }}
+                    onClick={(e) => e.stopPropagation()} // Impede o fechamento ao clicar no menu
+                  >
+                    <div className="px-3 py-1.5 text-[9px] font-black text-zinc-600 uppercase tracking-tighter border-b border-zinc-900 mb-1">
+                      Clip Actions
+                    </div>
+                    
+                    <button 
+                      onClick={() => {
+                        setInteractionMode('transform');
+                        setShowContextMenu(null);
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2 hover:bg-cyan-500/10 text-zinc-400 hover:text-cyan-400 text-[10px] font-black uppercase transition-all group"
+                    >
+                      <Maximize size={14} className="group-hover:scale-110 transition-transform" />
+                      Set Position (Transform)
+                    </button>
+
+                    <button 
+                      onClick={() => {
+                        
+                        
+                        setClips( prev => prev.map( c => 
+
+                            (c.id == selectedClipIdRef.current) ? {...c, activeKeyframeView : null} : c
+                        ))
+                        
+                        setInteractionMode('none')
+                        setShowContextMenu(null);
+                      
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2 hover:bg-red-500/10 text-zinc-400 hover:text-red-500 text-[10px] font-black uppercase transition-all"
+                    >
+                      <X size={14} /> Clear Mode
+                    </button>
+                  </div>
+         )}
+
+
 
           {/* PREVIEW PLAYER */}
           <section className="flex-1 bg-black flex flex-col items-center justify-center p-8 relative">
@@ -5436,26 +5868,109 @@ return (
 
 
 
+
               
                 <div 
-                  className="w-full max-w-4xl aspect-video bg-[#050505] rounded-xl border border-zinc-800 flex items-center justify-center relative group cursor-pointer overflow-hidden shadow-2xl"
+                  className="w-full max-w-4xl bg-[#050505] rounded-xl border border-zinc-800 flex items-center justify-center relative group cursor-pointer overflow-hidden shadow-2xl transition-all duration-500 ease-in-out"
+                  style={{ 
+                    // Calcula a proporção baseada nas configs do projeto (ex: 1080 / 1920 para vertical)
+                    aspectRatio: `${projectConfig.width} / ${projectConfig.height}` 
+                  }}
                   onClick={togglePlay}
-                  >
-                   
+                >
+                  {/* O Canvas agora preenche o contêiner que tem a proporção correta */}
+                  <canvas 
+                    ref={canvasRef}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      handleCanvasClick(e); // Sua função de Hit Test que define o selectedClipIdRef
+                    }}
+                    onMouseDown={(e) => {
+                      if (interactionMode === 'transform' && selectedClipIdRef.current) {
+                        isDraggingRef.current = true;
+                        lastMousePosRef.current = { x: e.clientX, y: e.clientY };
+                         
+                      }
+                    }}
+                    onMouseMove={(e) => {
+                      if (isDraggingRef.current && interactionMode === 'transform' && selectedClipIdRef.current) {
+                        const dx = e.clientX - lastMousePosRef.current.x;
+                        const dy = e.clientY - lastMousePosRef.current.y;
 
-                    <canvas ref={canvasRef}  className="absolute inset-0 w-full h-full object-contain" />
-                   
-                    
-                    
-                    
+
+                        console.log('dx', dx)
+                        
+                        // Pegamos o clipe atual
+                        const clip = clips.find(c => c.id === selectedClipIdRef.current);
+                        if (!clip) return;
+
+                        // Pegamos a posição atual interpolada
+                        const currentPos = getInterpolatedValueWithFades(currentTime, clip, 'position') as Position;
+
+
+                        console.log('posX', currentPos.x + dx)
+                        
+                        
+                        updateKeyframes(clip, 'position', { 
+                          x: currentPos.x + dx, 
+                          y: currentPos.y + dy 
+                        });
+
+                        lastMousePosRef.current = { x: e.clientX, y: e.clientY };
+                      }
+                    }}
+                    onMouseUp={() => {
+                      isDraggingRef.current = false;
+                       
+                    }}  
+                    style={{ cursor: canvasCursor }}
+                    className="absolute inset-0 w-full h-full object-contain" 
+                  />
+
+                  {interactionMode === 'transform' && selectedClipIdRef.current && (
+                    <div className="absolute inset-0 pointer-events-none">
+                      <svg className="w-full h-full">
+                          {/* Desenha o retângulo ao redor do clipe selecionado */}
+                          {(() => {
+                            const clip = clips.find(c => c.id === selectedClipIdRef.current);
+                            const pos = getInterpolatedValueWithFades(currentTime, clip, 'position');
+                            // Lógica de projeção de coordenadas Canvas -> Div UI
+
+                            //variaveis temporarias 
+
+                            const scale = 1
+                            const clipWidth = projectConfig.width - 10
+                            const clipHeight = projectConfig.height
+
+
+
+
+                            return (
+                              <rect 
+                                x={pos.x * scale} 
+                                y={pos.y * scale} 
+                                width={clipWidth * scale} 
+                                height={clipHeight * scale} 
+                                fill="none" 
+                                stroke="#ff0000" 
+                                strokeWidth="2"
+                              />
+                            )
+                          })()}
+                      </svg>
+                    </div>
+                  )}
+
+                  
+                  
+                  {/* Ícones de Play/Pause centralizados */}
+                  <div className="z-10 pointer-events-none">
                     {isPlaying ? (
                       <Pause size={56} className="text-white/5 group-hover:text-white/30 transition-all scale-90 group-hover:scale-100" />
                     ) : (
                       <Play size={56} className="text-white/5 group-hover:text-white/30 transition-all scale-90 group-hover:scale-100" />
                     )}
-
-
-                    
+                  </div>
                 </div>
 
          
@@ -5861,6 +6376,7 @@ return (
                               { label: 'Opacity', value: 'opacity', icon: <Layers size={14} /> },
                               { label: 'Speed', value: 'speed', icon: <Clock size={14} /> },
                               { label: '3D Rotation', value: 'rotation3d', icon: <Rotate3d size={14} /> },
+                              { label: 'Position', value: 'position', icon: <Crosshair size={14} /> },
                             ].map((sub) => (
                               <button
                                 key={sub.value}
@@ -5947,11 +6463,30 @@ return (
                 )}
 
                 {/* 3. Os Pontos Arrastáveis */}
-                {(clip.keyframes?.[clip.activeKeyframeView] || []).map((kf) => (
+                {(clip.keyframes?.[clip.activeKeyframeView] || []).map((kf) => 
+                
+                
+                {
+
+                  var cyString = ""
+
+                  clip.activeKeyframeView === 'volume' ? 
+                     cyString = `${(1 - reverterVolume(kf.value)) * 100}%`  : 
+                  clip.activeKeyframeView === 'speed' ? 
+                        cyString = `${(1 - reverterSpeed(kf.value)) * 100}%` : 
+                  clip.activeKeyframeView === 'position' ? 
+                        cyString = '50%':      
+                        cyString = `${(1 - kf.value) * 100}%`
+                  
+                  
+                  var title =  clip.activeKeyframeView === 'position' ? `${kf.value.x},${kf.value.y}` :
+                  `${kf.value}`
+                  
+                  return(
                   <circle
                     key={kf.id}
                     cx={kf.time * pixelsPerSecond}
-                    cy={clip.activeKeyframeView === 'volume' ? `${(1 - reverterVolume(kf.value)) * 100}%`  : clip.activeKeyframeView === 'speed' ? `${(1 - reverterSpeed(kf.value)) * 100}%` : `${(1 - kf.value) * 100}%`}
+                    cy={cyString}
                     r="5"
                     fill="white"
                     stroke="#7c3aed"
@@ -5972,10 +6507,22 @@ return (
                     
                   >
 
-                    <title> {kf.value} </title>
+                    <title> {title} </title>
 
                   </circle>  
-                ))}
+                )
+
+
+
+                }
+                
+                
+                
+                
+                
+                
+                
+                )}
               </svg>
               
               {/* Badge indicando o que estamos editando */}
