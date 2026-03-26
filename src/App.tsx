@@ -16,7 +16,7 @@
 
 
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence, number } from 'framer-motion';
 
 //Icons for the Render
@@ -179,8 +179,6 @@ interface Tracks
 
 // No seu tipo Clip, adicione:
 
-
-const PIXELS_PER_SECOND = 5;
 
 export default function App() {
   // --- STATE MANAGEMENT ---
@@ -786,8 +784,7 @@ const updateAudio = () => {
     currentTime >= clip.start  && 
     currentTime <= (clip.start  + clip.duration) && 
     knowTypeByAssetName(clip.name) !== 'image' &&
-    (tracks.find(t => t.id === clip.trackId)?.mute === false ||
-    !(tracks.find(t => t.id === clip.trackId)?.mute)) &&
+    (tracks.find(t => t.id === clip.trackId)?.mute !== true) &&
     (clip?.mute === false ||
     !(clip?.mute))
   );
@@ -1341,7 +1338,7 @@ useEffect(() => {
 
 
 const lastFrameTimeRef = useRef<number>(0);
-const FPS_LIMIT = 1000 / 10; // 30 FPS (aprox 33ms)
+const FPS_LIMIT = 1000 / 30; // 30 FPS
 
 const getOpacityAtTime = (clip: Clip) => {
   if (!clip.keyframes || !clip.keyframes.opacity || clip.keyframes.opacity.length === 0) {
@@ -2376,7 +2373,7 @@ const handleUndo = () => {
 
 const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
   const { minStart, maxEndTimestamp } = getClipBoundaries(id);
-  const deltaSeconds = deltaX / PIXELS_PER_SECOND; // Remove 0.2 if you want raw mouse precision
+  const deltaSeconds = deltaX / pixelsPerSecond; // Remove 0.2 if you want raw mouse precision
 
   setClips(prev => prev.map(clip => {
     if (clip.id !== id) return clip;
@@ -2443,7 +2440,7 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
       const deltaX = moveEvent.clientX - startX;
       
       // Call the resize handler
-      handleResize(clipId, deltaX * 0.2, side);
+      handleResize(clipId, deltaX, side);
     };
 
     const onMouseUp = () => {
@@ -2461,34 +2458,18 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
   // Effect to handle automatic saving whenever project data changes
   useEffect(() => {
 
-    
-    
-
-
     const saveProject = async () => {
       // DO NOT save if the project hasn't finished loading yet
      
       if (!isProjectLoaded || !currentProjectPath) return;
 
-      
-
-     
-
-     const projectData: ProjectFileData = {
+      const projectData: ProjectFileData = {
         projectName,
         assets,
         clips,
         tracks,
         lastModified: Date.now()
       };
-
-      
-
-      
-
-
-      
-
 
       try {
         await invoke('save_project_data', {
@@ -2501,14 +2482,11 @@ const handleResize = (id: string, deltaX: number, side: 'left' | 'right') => {
       } catch (err) {
         console.error("Auto-save failed:", err);
       }
-
-
-
     };
 
     const timeoutId = setTimeout(saveProject, 500); // 0.5 second debounce
     return () => clearTimeout(timeoutId);
-  }, [clips, assets, projectName, isProjectLoaded]);  
+  }, [clips, assets, projectName, isProjectLoaded, currentProjectPath, tracks]);  
 
   //Formating pos lable for min and segs
 
@@ -3004,7 +2982,7 @@ const canvasRef2 = useRef<HTMLCanvasElement>(null);
 
 
        const now = performance.now();
-        if (now - lastFrameTimeRef.current < FPS_LIMIT) 
+        if (now - lastFrameTimeRef.current < (1000 / 30)) 
           return;
         lastFrameTimeRef.current = now;
           
@@ -3056,7 +3034,7 @@ const canvasRef2 = useRef<HTMLCanvasElement>(null);
             setCurrentTime2(time);
             renderFrame2(time);
           }
-        }, 1000 / 10); // 30 FPS
+        }, 1000 / 30); // 30 FPS
         return () => clearInterval(interval);
         
         
@@ -3267,7 +3245,7 @@ const handleDropOnEmptyArea = (e: React.DragEvent) => {
   const x = e.clientX - container.left - 200;
 
   //last term to calibrate with  zoom
-  const dropTime = Math.max(0, x / PIXELS_PER_SECOND) * (2/pixelsPerSecond);
+  const dropTime = Math.max(0, x / pixelsPerSecond);
 
   const TRACK_HEIGHT = 80;
   const totalTracksHeight = tracks.length * TRACK_HEIGHT;
@@ -3354,7 +3332,7 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
 
   //const scrollLeft = timelineContainerRef.current?.scrollLeft || 0;
   //const relativeX = mouseX - timelineBounds.left + scrollLeft;
-  //const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND);
+  //const dropTime = Math.max(0, relativeX / pixelsPerSecond);
 
   const rect = timelineContainerRef.current.getBoundingClientRect();
   
@@ -3366,9 +3344,9 @@ const handleNativeDrop = async (paths: string[], mouseX: number, mouseY: number)
   // 2. Adjustment: If you have a sidebar of tracks (e.g., 200px), subtract here.
   const trackSidebarWidth = 0; // Change this if there is a sidebar inside the timeline.
   const relativeX = mouseX - rect.left - trackSidebarWidth + scrollLeft;
-  //3. Calculating the time using the updated value of PIXELS_PER_SECOND
+  //3. Calculating the time using the updated value of pixelsPerSecond
   // last term is to calibrate with newzoom
-  const dropTime = Math.max(0, relativeX / PIXELS_PER_SECOND) * (2/pixelsPerSecond);
+  const dropTime = Math.max(0, relativeX / pixelsPerSecond);
   
   //console.log(`Mouse X: ${mouseX}, Rect Left: ${rect.left}, Scroll: ${scrollLeft}, Final Time: ${dropTime}`);
   
