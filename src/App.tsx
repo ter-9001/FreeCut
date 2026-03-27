@@ -4378,7 +4378,7 @@ console.log('rotation3d', rotation3d)
           {
           (isVideo || isAudio) && (<div className="grid grid-cols-2 gap-2">
             <PropertyRow label="Fade In Audio (s)" keyframable={false}>
-              <input type="text" 
+              <input type="number" 
               value={selectedClip.fadeinAudio ? 
                 selectedClip.fadeinAudio : 0
                }
@@ -5171,9 +5171,9 @@ const addKeyframe = (e: React.MouseEvent, clipId: string) => {
       const view = c.activeKeyframeView as keyof NonNullable<Clip['keyframes']>;
       
       // Calculamos o valor final baseado no tipo de visão
-      let finalValue = view === 'speed' ? converterSpeed(rawValue) : rawValue;
-      finalValue = view === 'volume' ? convertDB(rawValue) : rawValue;
-      finalValue = view === 'zoom' ? convertZoom(rawValue) : rawValue;
+      let finalValue = view === 'speed' ? converterSpeed(rawValue) : 
+      view === 'volume' ? convertDB(rawValue) : 
+      view === 'zoom' ? convertZoom(rawValue) : rawValue;
 
 
       const currentKfs = c.keyframes?.[view] || [];
@@ -5270,7 +5270,10 @@ const calculateY = (value: number, height: number, type:string = '') => {
     return (1 - reverterSpeed(value)) * height
 
   if(type == 'volume')
+  {
+    console.log('volume on', (1- reverterVolume(value)) * height, value)
     return (1- reverterVolume(value)) * height
+  }
 
   if(type == 'zoom')
     return (1- reverterZoom(value)) * height
