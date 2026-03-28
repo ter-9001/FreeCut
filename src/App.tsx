@@ -18,6 +18,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence, number } from 'framer-motion';
+import * as THREE from 'three';
 
 //Icons for the Render
 import { 
@@ -818,7 +819,7 @@ const updatePreview = async (currentTime: number) => {
 
   if (currentClips.length == 0)
   {
-    topClips.current = null
+    topClips.current = []
     return
   }  
       
@@ -1430,122 +1431,268 @@ const getOpacityAtTime = (clip: Clip) => {
 
 //Render main frame
 
-const drawFrame__new2 = async (time: number) => {
-    if (!canvasRef.current) return;
+
+
+// Objetos do Core Engine
+
+//const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+//const sceneRef = useRef<THREE.Scene | null>(null);
+//const cameraRef = useRef<THREE.OrthographicCamera | null>(null);
+//const planesRef = useRef<Map<string, THREE.Mesh>>(new Map()); // Guarda os planos de cada clip
+
+
+
+
+//const canvasRef = useRef<HTMLCanvasElement>(null);
+const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+const sceneRef = useRef<THREE.Scene | null>(null);
+const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+const groupsRef = useRef<Map<string, THREE.Group>>(new Map());
+// const lastFrameTimeRef = useRef<number>(0);
+
+useEffect(() => {
+  // Se o canvas não existe ou se já inicializamos, não faz nada
+  if (!canvasRef.current || rendererRef.current) return;
+
+  const initEngine = () => {
+    const width = projectConfig.width;
+    const height = projectConfig.height;
+
+    // 1. Renderer
+    const renderer = new THREE.WebGLRenderer({
+      canvas: canvasRef.current!,
+      alpha: true,
+      antialias: true,
+      powerPreference: "high-performance"
+    });
+    renderer.setSize(width, height, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    rendererRef.current = renderer;
+
+    // 2. Cena
+    const scene = new THREE.Scene();
+    sceneRef.current = scene;
+
+    // 3. Câmera
+    const fov = 45;
+    const aspect = width / height;
+    const camera = new THREE.PerspectiveCamera(fov, aspect, 0.1, 10000);
+    const zPos = (height / 2) / Math.tan((fov * Math.PI) / 360);
+    camera.position.set(width / 2, -height / 2, zPos);
+    camera.lookAt(width / 2, -height / 2, 0);
+    cameraRef.current = camera;
     
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return;
+    console.log("🚀 Three.js Engine Inicializado com Sucesso");
+  };
 
-    if (canvasRef.current.width !== projectConfig.width || canvasRef.current.height !== projectConfig.height) {
-        canvasRef.current.width = projectConfig.width;
-        canvasRef.current.height = projectConfig.height;
+  initEngine();
+
+  return () => {
+    if (rendererRef.current) {
+      rendererRef.current.dispose();
+      rendererRef.current = null;
     }
+  };
+}, [canvasRef.current, projectConfig.width, projectConfig.height]); // Adicionado canvasRef.current aqui
 
-    if (!topClips.current || topClips.current.length === 0) {
-        ctx.fillStyle = "black";
-        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-        return;
-    }
 
-    const now = performance.now();
-    if (isPlaying && (now - lastFrameTimeRef.current < (1000 / projectConfig.fps))) return;
-    lastFrameTimeRef.current = now;
+const fetchFramesFromRust = async (time: number) => {
+  // Garante que topClips existe
+  if (!topClips.current) return [];
 
-    const blendModeMap: Record<string, GlobalCompositeOperation> = {
-        'normal': 'source-over',
-        'screen': 'screen',
-        'multiply': 'multiply',
-        'overlay': 'overlay',
-        'lineardodge': 'lighter',
-    };
+  const activeClips = topClips.current.reverse()
+
+
+
+  const framePromises = activeClips.map(async (clip) => {
+    const timelineRelativeTime = time - clip.start;
+    const clipTimeMs = (timelineRelativeTime + (clip.beginmoment || 0)) * 1000;
+    const path = `${currentProjectPath}/videos/${clip.name}`;
 
     try {
-        // --- FASE 1: BUSCA DE FRAMES ---
-        const framePromises = topClips.current.map(async (clip) => {
-            const timelineRelativeTime = time - clip.start;
-            let assetRelativeTime = timelineRelativeTime;
+      const frameBase64 = await invoke('get_video_frame', { path, timeMs: clipTimeMs }) as string;
+      return new Promise<{id: string, img: HTMLImageElement, clip: any}>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve({ id: clip.id, img, clip });
+        img.src = frameBase64;
+      });
+    } catch (e) { return null; }
+  });
 
-            if (clip.keyframes?.speed && clip.keyframes.speed.length > 0) {
-                // ... (Sua lógica de Speed Ramp mantida)
-            }
+  const results = await Promise.all(framePromises);
+  return results.filter((res): res is {id: string, img: HTMLImageElement, clip: any} => res !== null);
+};
 
-            const clipTimeMs = (assetRelativeTime + (clip.beginmoment || 0)) * 1000;
-            const path = `${currentProjectPath}/videos/${clip.name}`;
+const syncClipsToScene = (loadedData: any[], time: number) => {
+  const scene = sceneRef.current;
+  if (!scene) return;
 
-            try {
-                const frameBase64: string = await invoke('get_video_frame', { path, timeMs: clipTimeMs });
-                return new Promise<HTMLImageElement | null>((resolve) => {
-                    const img = new Image();
-                    img.onload = () => resolve(img);
-                    img.onerror = () => resolve(null);
-                    img.src = frameBase64;
-                });
-            } catch (e) { return null; }
-        });
-
-        const loadedImages = await Promise.all(framePromises);
-
-        // --- FASE 2: DESENHO ---
-        ctx.fillStyle = "black";
-        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-
-        for (let i = loadedImages.length - 1; i >= 0; i--) {
-            const img = loadedImages[i];
-            const clip = topClips.current[i];
-            if (!img) continue;
-
-            
-            // 1. Interpolação de Atributos
-            const opacity = getInterpolatedValueWithFades(currentTime, clip, 'opacity');
-            const zoom = getInterpolatedValueWithFades(currentTime, clip, 'zoom') || 1.0;
-            const pos = getInterpolatedValueWithFades(currentTime, clip, 'position') as Position | null;
-
-            // 2. Cálculo de Dimensões (Usa metadados ou a imagem real)
-            const clipW = clip.dimensions?.x || img.width;
-            const clipH = clip.dimensions?.y || img.height;
-
-            // 3. Cálculo de Posição Base
-            let drawX = pos ? pos.x : (canvasRef.current.width - clipW) / 2;
-            let drawY = pos ? pos.y : (canvasRef.current.height - clipH) / 2;
-
-            ctx.save();
-
-// 1. Defina o modo de mesclagem e opacidade primeiro
-ctx.globalCompositeOperation = blendModeMap[clip.blendmode || 'normal'] || 'source-over';
-ctx.globalAlpha = opacity;
-
-
-// 3. Posição alvo (onde o centro do clipe deve estar na tela)
-// Se não houver pos, centralizamos no canvas
-const targetX = pos ? pos.x : (canvasRef.current.width - clipW) / 2;
-const targetY = pos ? pos.y : (canvasRef.current.height - clipH) / 2;
-
-/**
- * ESTRATÉGIA ANTI-ATRASO:
- * Em vez de múltiplos translates, fazemos uma única transformação coordenada.
- */
-// Movemos para o destino final (Posição X, Y)
-ctx.translate(targetX, targetY);
-
-// Movemos para o centro do próprio clipe para escalar a partir do meio
-ctx.translate(clipW / 2, clipH / 2);
-ctx.scale(zoom, zoom);
-// Movemos de volta para a origem do clipe
-ctx.translate(-clipW / 2, -clipH / 2);
-
-// 4. Desenho final (o 0,0 agora é o topo-esquerdo do clipe já transformado)
-ctx.drawImage(img, 0, 0, clipW, clipH);
-
-ctx.restore();
-        }
-
-    } catch (err) {
-        console.error("Erro no preview:", err);
+  const loadedIds = new Set(loadedData.map(d => d.id));
+  
+  // Limpeza
+  groupsRef.current.forEach((group, id) => {
+    if (!loadedIds.has(id)) {
+      scene.remove(group);
+      const mesh = group.children[0] as THREE.Mesh;
+      if (mesh.material instanceof THREE.MeshBasicMaterial && mesh.material.map) {
+        mesh.material.map.dispose();
+      }
+      groupsRef.current.delete(id);
     }
+  });
+
+  // Renderização/Sincronização
+  loadedData.forEach(({ id, img, clip }, index) => {
+    let group = groupsRef.current.get(id);
+    let mesh: THREE.Mesh;
+
+    if (!group) {
+      group = new THREE.Group();
+      const geometry = new THREE.PlaneGeometry(1, 1);
+      const material = new THREE.MeshBasicMaterial({ transparent: true, side: THREE.DoubleSide });
+      mesh = new THREE.Mesh(geometry, material);
+      group.add(mesh);
+      scene.add(group);
+      groupsRef.current.set(id, group);
+    } else {
+      mesh = group.children[0] as THREE.Mesh;
+    }
+
+    const texture = new THREE.Texture(img);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
+    
+    const mat = mesh.material as THREE.MeshBasicMaterial;
+    if (mat.map) mat.map.dispose();
+    mat.map = texture;
+
+    // --- CÁLCULO DE KEYFRAMES COM FALLBACKS ---
+
+    // 1. Opacidade (Padrão 1 se não houver keyframe)
+    const opacity = getInterpolatedValueWithFades(time, clip, 'opacity') ?? 1.0;
+
+    // 2. Zoom (Padrão 1 se não houver keyframe)
+    const zoom = getInterpolatedValueWithFades(time, clip, 'zoom') || 1.0;
+
+    // 3. Posição (Padrão 0,0 se não houver keyframe)
+    const pos = getInterpolatedValueWithFades(time, clip, 'position') || { x: 0, y: 0 };
+
+    // 4. Rotação (AQUI ESTÁ O ERRO: Precisamos garantir que rot e rot3d sejam números)
+    const rotationRaw = getInterpolatedValueWithFades(time, clip, 'rotation3d');
+    const rotation = {
+      rot: rotationRaw?.rot ?? 0,
+      rot3d: rotationRaw?.rot3d ?? 0
+    };
+
+    // --- APLICAÇÃO DAS DIMENSÕES ---
+    const w = (clip.dimensions?.x || img.width) * zoom;
+    const h = (clip.dimensions?.y || img.height) * zoom;
+
+    // --- APLICAÇÃO NO THREE.JS ---
+
+    // Grupo: Posição e Rotação Z (2D)
+    group.position.set(pos.x + w / 2, -(pos.y + h / 2), index * 0.5);
+    group.rotation.z = THREE.MathUtils.degToRad(-(rotation.rot || 0));
+
+    // Mesh: Escala e Rotação Y (3D)
+    mesh.scale.set(w, h, 1);
+    mesh.rotation.y = THREE.MathUtils.degToRad(rotation.rot3d || 0);
+
+    // Material
+    mat.transparent = true;
+    mat.opacity = opacity;
+
+
+
+    // --- TRATAMENTO DE BLEND MODES ---
+    
+    // 2. Fallback total: se não houver clip.blendmode, usa 'normal'
+    const userBlendMode = (clip.blendmode || 'normal').toLowerCase();
+
+    // 3. Mapeamento seguro para constantes do Three.js
+    let threeJSBlending: THREE.Blending;
+    mat.premultipliedAlpha = true
+
+    mat.blending = THREE.CustomBlending;
+    mat.blendEquation = THREE.AddEquation;
+    mat.blendSrc = THREE.SrcAlphaFactor;
+    mat.blendDst = THREE.OneMinusSrcAlphaFactor;
+
+    switch (userBlendMode) {
+      case 'screen':
+        mat.blendSrc = THREE.OneFactor;
+        mat.blendDst = THREE.OneMinusSrcColorFactor;
+        mat.blendEquation = THREE.AddEquation;
+        break;
+      case 'multiply':
+        threeJSBlending = THREE.MultiplyBlending;
+        break;
+      case 'lineardodge':
+      case 'add':
+        threeJSBlending = THREE.AdditiveBlending;
+        break;
+      case 'overlay':
+        mat.blendSrc = THREE.DstColorFactor;
+        mat.blendDst = THREE.SrcColorFactor;
+        mat.blendEquation = THREE.AddEquation;
+        break;
+      case 'normal':
+      default:
+        threeJSBlending = THREE.NormalBlending;
+        break;
+    }
+
+    // Só aplica se o valor for diferente do atual (otimização de performance)
+   
+
+    // IMPORTANTE: Para o CapCut, o depthWrite como false evita que a "caixa" invisível
+    // de um clipe com blend mode corte o vídeo que está atrás.
+    mat.depthWrite = false;
+
+
+  });
 };
 
 
 const drawFrame = async (time: number) => {
+  // Agora fazemos o check das Refs aqui
+  if (!rendererRef.current || !sceneRef.current || !cameraRef.current) {
+      console.warn("⚠️ Engine não inicializado ainda...");
+      return;
+  }
+
+  try {
+    const loadedData = await fetchFramesFromRust(time);
+    syncClipsToScene(loadedData, time);
+    rendererRef.current.render(sceneRef.current, cameraRef.current);
+  } catch (err) {
+    console.error("Erro no drawFrame:", err);
+  }
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const drawFrame_old = async (time: number) => {
   if (!canvasRef.current) return;
 
   const ctx = canvasRef.current.getContext('2d');
@@ -1679,119 +1826,6 @@ const drawFrame = async (time: number) => {
   }
 };
 
-const drawFrame_old = async (time: number) => {
-    if (!canvasRef.current) return;
-    
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return;
-
-    if (canvasRef.current.width !== projectConfig.width || canvasRef.current.height !== projectConfig.height) {
-        canvasRef.current.width = projectConfig.width;
-        canvasRef.current.height = projectConfig.height;
-    }
-
-    if (!topClips.current || topClips.current.length === 0) {
-        ctx.fillStyle = "black";
-        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-        return;
-    }
-
-    const now = performance.now();
-    if (isPlaying && (now - lastFrameTimeRef.current < (1000 / projectConfig.fps))) return;
-    lastFrameTimeRef.current = now;
-
-    const blendModeMap: Record<string, GlobalCompositeOperation> = {
-        'normal': 'source-over',
-        'screen': 'screen',
-        'multiply': 'multiply',
-        'overlay': 'overlay',
-        'lineardodge': 'lighter',
-    };
-
-    try {
-        // --- FASE 1: BUSCA DE FRAMES ---
-        const framePromises = topClips.current.map(async (clip) => {
-            const timelineRelativeTime = time - clip.start;
-            let assetRelativeTime = timelineRelativeTime;
-
-            if (clip.keyframes?.speed && clip.keyframes.speed.length > 0) {
-                // ... (Sua lógica de Speed Ramp mantida)
-            }
-
-            const clipTimeMs = (assetRelativeTime + (clip.beginmoment || 0)) * 1000;
-            const path = `${currentProjectPath}/videos/${clip.name}`;
-
-            try {
-                const frameBase64: string = await invoke('get_video_frame', { path, timeMs: clipTimeMs });
-                return new Promise<HTMLImageElement | null>((resolve) => {
-                    const img = new Image();
-                    img.onload = () => resolve(img);
-                    img.onerror = () => resolve(null);
-                    img.src = frameBase64;
-                });
-            } catch (e) { return null; }
-        });
-
-        const loadedImages = await Promise.all(framePromises);
-
-        // --- FASE 2: DESENHO ---
-        ctx.fillStyle = "black";
-        ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-
-        for (let i = loadedImages.length - 1; i >= 0; i--) {
-            const img = loadedImages[i];
-            const clip = topClips.current[i];
-            if (!img) continue;
-
-            
-            // 1. Interpolação de Atributos
-            const opacity = getInterpolatedValueWithFades(currentTime, clip, 'opacity');
-            const zoom = getInterpolatedValueWithFades(currentTime, clip, 'zoom') || 1.0;
-            const pos = getInterpolatedValueWithFades(currentTime, clip, 'position') as Position | null;
-
-            // 2. Cálculo de Dimensões (Usa metadados ou a imagem real)
-            const clipW = clip.dimensions?.x || img.width;
-            const clipH = clip.dimensions?.y || img.height;
-
-            // 3. Cálculo de Posição Base
-            let drawX = pos ? pos.x : (canvasRef.current.width - clipW) / 2;
-            let drawY = pos ? pos.y : (canvasRef.current.height - clipH) / 2;
-
-            ctx.save();
-
-// 1. Defina o modo de mesclagem e opacidade primeiro
-ctx.globalCompositeOperation = blendModeMap[clip.blendmode || 'normal'] || 'source-over';
-ctx.globalAlpha = opacity;
-
-
-// 3. Posição alvo (onde o centro do clipe deve estar na tela)
-// Se não houver pos, centralizamos no canvas
-const targetX = pos ? pos.x : (canvasRef.current.width - clipW) / 2;
-const targetY = pos ? pos.y : (canvasRef.current.height - clipH) / 2;
-
-/**
- * ESTRATÉGIA ANTI-ATRASO:
- * Em vez de múltiplos translates, fazemos uma única transformação coordenada.
- */
-// Movemos para o destino final (Posição X, Y)
-ctx.translate(targetX, targetY);
-
-// Movemos para o centro do próprio clipe para escalar a partir do meio
-ctx.translate(clipW / 2, clipH / 2);
-ctx.scale(zoom, zoom);
-// Movemos de volta para a origem do clipe
-ctx.translate(-clipW / 2, -clipH / 2);
-
-// 4. Desenho final (o 0,0 agora é o topo-esquerdo do clipe já transformado)
-ctx.drawImage(img, 0, 0, clipW, clipH);
-
-ctx.restore();
-        }
-
-    } catch (err) {
-        console.error("Erro no preview:", err);
-    }
-};
 
 
 
@@ -5632,7 +5666,6 @@ return (
                 <div 
                   className="w-full max-w-4xl bg-[#050505] rounded-xl border border-zinc-800 flex items-center justify-center relative group cursor-pointer overflow-hidden shadow-2xl transition-all duration-500 ease-in-out"
                   style={{ 
-                    // Calcula a proporção baseada nas configs do projeto (ex: 1080 / 1920 para vertical)
                     aspectRatio: `${projectConfig.width} / ${projectConfig.height}` 
                   }}
                   onClick={togglePlay}
@@ -5683,7 +5716,7 @@ return (
                        
                     }}  
                     style={{ cursor: canvasCursor }}
-                    className="absolute inset-0 w-full h-full object-contain" 
+                    className="absolute inset-0 w-full h-full"
                   />
 
                   {interactionMode === 'transform' && selectedClipIdRef.current && (

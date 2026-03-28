@@ -10,6 +10,8 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.5.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.6.0",
@@ -19,7 +21,8 @@
     "framer-motion": "^12.29.2",
     "lucide-react": "^0.563.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "three": "^0.183.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
